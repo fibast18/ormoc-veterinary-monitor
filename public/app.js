@@ -1,4 +1,4 @@
-/* OCVMS v1.0.0 — dependency-free client. Shared data lives only in Cloudflare D1. */
+/* OCVMS v1.0.1 — dependency-free client. Shared data lives only in Cloudflare D1. */
 const app=document.querySelector('#app');
 const nowPH=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`;};
 const state={user:null,catalog:null,page:'dashboard',month:nowPH().slice(0,7),barangay:'',data:null,census:[],vaccinations:[],users:[],audit:[],search:''};
@@ -116,12 +116,12 @@ async function authPage(){
  <div class="field"><label>Admin password (minimum 12 characters)</label><input type="password" name="password" minlength="12" maxlength="128" required></div><button class="btn full" type="submit">Create first administrator</button></form>`:
  `<form id="login-form"><div class="field"><label>Username</label><input name="username" autocomplete="username" required></div>
  <div class="field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div><button class="btn full" type="submit">Sign in</button></form>`}
- <div id="auth-error"></div><p class="help text-center" style="margin-top:25px">Cloudflare Workers + D1 · v1.0.0<br>Developed by: Engr. Rico J. Pono</p></div></div>`;
+ <div id="auth-error"></div><p class="help text-center" style="margin-top:25px">Cloudflare Workers + D1 · v1.0.1<br>Developed by: Engr. Rico J. Pono</p></div></div>`;
 }
 function shell(){
- app.innerHTML=`<header class="topbar"><div class="brand"><div class="brand-icon">✚</div><div><h1>ORMOC CITY VETERINARY</h1><small>Animal & Vaccination Monitoring System · v1.0.0</small></div></div>
+ app.innerHTML=`<header class="topbar"><div class="brand"><div class="brand-icon">✚</div><div><h1>ORMOC CITY VETERINARY</h1><small>Animal & Vaccination Monitoring System · v1.0.1</small></div></div>
  <div class="account"><div class="account-details"><strong>${esc(state.user.full_name)}</strong><small>${esc(roleText(state.user.role))}</small></div><button class="btn light" data-action="logout">Sign out</button></div></header>
- <div class="layout"><nav class="tabs" id="tabs"></nav><div id="flash"></div><main id="content"></main><footer class="footer">City Veterinary Monitoring · Ormoc City, Leyte · 85 barangays<br>Developed by: Engr. Rico J. Pono · Version 1.0.0</footer></div>`;
+ <div class="layout"><nav class="tabs" id="tabs"></nav><div id="flash"></div><main id="content"></main><footer class="footer">City Veterinary Monitoring · Ormoc City, Leyte · 85 barangays<br>Developed by: Engr. Rico J. Pono · Version 1.0.1</footer></div>`;
 }
 function tabs(){const defs=[['dashboard','▦ Dashboard'],['census','♧ Animal Census'],['vaccinations','✚ Vaccinations'],['barangays','◫ Barangays'],...(isAdmin()?[['users','♙ Users'],['audit','☷ Audit Trail']]:[])];$('#tabs').innerHTML=defs.map(([p,t])=>`<button data-action="nav" data-page="${p}" class="${state.page===p?'active':''}">${t}</button>`).join('');}
 function draw(){tabs();const v={dashboard:dashboardView,census:censusView,vaccinations:vaccinationView,barangays:barangayView,users:userView,audit:auditView}[state.page]||dashboardView;$('#content').innerHTML=v();const field=$('#user-barangay-field');if(field)field.classList.toggle('hidden',$('#role-select').value!=='encoder');}

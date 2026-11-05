@@ -10,7 +10,5 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "ormoc-vet-monitor"
-# REPLACE with the real database ID from Cloudflare > D1 > ormoc-vet-monitor
-# Do not deploy until replaced.
 database_id = "67c36f3b-8d91-4563-9791-d3f0dd7abcf7"
 migrations_dir = "migrations"

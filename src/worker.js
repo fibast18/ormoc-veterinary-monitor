@@ -1,6 +1,8 @@
-/* Ormoc City Veterinary Monitoring System v1.0.0 — Cloudflare Workers + D1 */
-const VERSION = '1.0.0';
+/* Ormoc City Veterinary Monitoring System v1.0.1 — Cloudflare Workers + D1 */
+const VERSION = '1.0.1';
 const SESSION_HOURS = 12;
+// Cloudflare Workers production rejects PBKDF2 deriveBits over 100,000 iterations.
+// Do not raise without migrating to a supported password KDF and versioned hashes.
 const PBKDF2_ITERATIONS = 100000;
 const SPECIES = new Set(['carabao','cattle','swine','goat','sheep','horse','chicken','duck','turkey','quail','dog','cat','rabbit','other']);
 const BAD_REQUEST = (message, status=400) => Object.assign(new Error(message), {status});

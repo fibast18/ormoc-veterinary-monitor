@@ -1,4 +1,4 @@
-# Ormoc City Veterinary Monitoring System (OCVMS) v1.0.0
+# Ormoc City Veterinary Monitoring System (OCVMS) v1.0.1
 
 **Animal/Livestock Census + Dog/Cat Vaccination Monitoring**  
 Prepared for City Veterinary Office, Ormoc City, Leyte  
@@ -81,12 +81,12 @@ node --experimental-sqlite tests/integration.mjs
 ## Scope, operational requirements, limitations
 
 - **Internet is required** to access and save shared Cloudflare D1 records. This release is not offline-first and has no offline queue.
-- **This release has not been independently security audited.** Before collecting personally identifiable animal owner information, extend the security/privacy design and seek LGU privacy/DPO review. In v1.0.0, enter aggregate counts only; do **not** put names, addresses, phone numbers, or other personal data in free-text notes.
+- **This release has not been independently security audited.** Before collecting personally identifiable animal owner information, extend the security/privacy design and seek LGU privacy/DPO review. In v1.0.1, enter aggregate counts only; do **not** put names, addresses, phone numbers, or other personal data in free-text notes.
 - Vaccination entry errors can be edited (which makes the record pending), or a City Admin can **reject** previously approved data to exclude it from official totals. There is no bulk deletion button.
 - The `Other` vaccine category is broad. Use notes for a non-rabies vaccine product; specific vaccine catalogs can be added later.
 - CSV vaccination imports are additive; importing the exact same file twice will **double-count doses** if both copies are approved. Review before approval.
 - Per-month list views and CSV exports cap at 3,000 and 10,000 records respectively. For larger data volumes, add pagination.
-- Current passwords are shared by the City Admin directly; there is no self-service password recovery or MFA in v1.0.0.
+- Current passwords are shared by the City Admin directly; there is no self-service password recovery or MFA in v1.0.1.
 - A public source repository is acceptable if no secrets or database exports are committed, but access to the live data is **not public**. Only authenticated app users can access records.
 - The city should validate species classifications, survey frequency, and data approval policy before treating the dashboard as an official reporting system.
 
@@ -99,4 +99,12 @@ Cloudflare Free plan currently offers a Workers request allowance and D1 quotas;
 
 As of November 2026, published limits include **100,000 Workers requests/day**, **5 million D1 rows read/day**, **100,000 rows written/day**, and **500 MB max per database** on Free. A small 85-barangay pilot can often fit within these limits, but actual cost/availability depends on usage and account quotas. Daily usage overages on Free may cause failures until quota resets.
 
-**Version 1.0.0 · Initial release · November 5, 2026**
+**Version 1.0.1 · Cloudflare password hashing fix · November 5, 2026**
+
+## v1.0.1 Cloudflare compatibility fix
+
+- Fixed initial administrator creation/login failure on Cloudflare Workers caused by the v1.0.0 PBKDF2 iteration count exceeding the production runtime limit (210,000 requested, 100,000 supported). The code now uses 100,000.
+- Added an automated PBKDF2-limit check to prevent this release-blocking regression.
+- Existing D1 schema, 85-barangay roster, saved data, admin secret and all system modules remain unchanged; **do not rerun or wipe database migrations**.
+- The included `wrangler.toml` uses the D1 Database ID observed in the user’s Cloudflare deployment. Confirm it matches the intended database before deploying elsewhere.
+- For government production deployment, implement stronger password hashing via supported Argon2id or equivalent following IT/DPO security review; 100,000 PBKDF2-SHA-256 rounds is only a Workers-compatible hotfix.

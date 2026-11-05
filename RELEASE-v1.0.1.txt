@@ -1,0 +1,20 @@
+ORMOC CITY VETERINARY MONITORING SYSTEM v1.0.1 — FIX RELEASE
+
+Fixed: First administrator creation failed with "PBKDF2 iteration counts above 100000 are not supported (requested 210000)".
+
+The entire v1.0.0 system is retained. Only password hashing iteration count, version labels, documentation, and a regression test were changed.
+
+FASTEST FIX ON THE USER'S EXISTING GITHUB PROJECT
+1. Open GitHub repo > src > worker.js > Edit.
+2. Replace `const PBKDF2_ITERATIONS = 210000;` with `const PBKDF2_ITERATIONS = 100000;`
+3. Commit the change to main. If GitHub is connected, Cloudflare automatically deploys it.
+4. Retry initial administrator setup at the existing workers.dev URL.
+
+FULL RELEASE METHOD
+1. Extract ZIP; check wrangler.toml has the correct D1 Database ID.
+2. Upload/replace the files in GitHub main. Alternatively, from the extracted root: npx wrangler deploy
+3. Do not delete or recreate your D1 database. Do not rerun migrations.
+4. After successful setup, confirm login and dashboard; then remove BOOTSTRAP_TOKEN from Cloudflare secrets.
+
+IMPORTANT SECURITY NOTE
+100,000 PBKDF2 rounds is Cloudflare-compatible but below modern recommended password hashing strength. Plan a supported Argon2id upgrade after formal security review and before official rollout.
