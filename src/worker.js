@@ -1,7 +1,7 @@
 /* Ormoc City Veterinary Monitoring System v1.0.0 — Cloudflare Workers + D1 */
 const VERSION = '1.0.0';
 const SESSION_HOURS = 12;
-const PBKDF2_ITERATIONS = 210000;
+const PBKDF2_ITERATIONS = 100000;
 const SPECIES = new Set(['carabao','cattle','swine','goat','sheep','horse','chicken','duck','turkey','quail','dog','cat','rabbit','other']);
 const BAD_REQUEST = (message, status=400) => Object.assign(new Error(message), {status});
 const enc = new TextEncoder();
