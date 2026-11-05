@@ -37,15 +37,32 @@ r=await call('/api/vaccinations?month=2026-11',{cookie:adminCookie});assert.equa
 r=await call('/api/vaccinations/review',{cookie:adminCookie,data:{id:vId,status:'approved'}});assert.equal(r.status,200,r.body.error);
 r=await call('/api/dashboard?month=2026-11',{cookie:adminCookie});assert.equal(r.body.totals.vaccinated_dogs,35);
 r=await call('/api/export?type=summary&month=2026-11',{cookie:adminCookie});assert.equal(r.status,200);assert.ok(r.body.includes('Macabug'));assert.ok(r.body.includes('dog_anti_rabies_doses'));
-r=await call('/api/users',{cookie:adminCookie,data:{action:'create',username:'encoder.macabug',full_name:'Test Encoder',role:'encoder',barangay_id:mac.id,password:'EncoderPassphrase@@2026'}});assert.equal(r.status,200,r.body.error);
-r=await call('/api/login',{data:{username:'encoder.macabug',password:'EncoderPassphrase@@2026'}});assert.equal(r.status,200,r.body.error);encoderCookie=r.cookie.split(';')[0];
-r=await call('/api/census',{cookie:encoderCookie,data:{barangay_id:tamb.id,species_code:'goat',month:'2026-11',head_count:33,households:9}});assert.equal(r.status,403,'encoder must be blocked outside own barangay');
-r=await call('/api/dashboard?month=2026-11',{cookie:encoderCookie});assert.equal(r.body.totals.expected,1,'encoder scope should be one barangay');
+// City Admin appoints Encoder without a barangay selection. Older encoder rows remain valid.
+r=await call('/api/users',{cookie:adminCookie,data:{action:'create',username:'encoder.cvo',full_name:'CVO Citywide Encoder',role:'encoder',password:'EncoderPassphrase@@2026'}});assert.equal(r.status,200,r.body.error);
+r=await call('/api/users',{cookie:adminCookie});assert.equal(r.status,200);assert.equal(r.body.rows.find(x=>x.username==='encoder.cvo').barangay_id,null,'no assigned barangay exposed');
+r=await call('/api/login',{data:{username:'encoder.cvo',password:'EncoderPassphrase@@2026'}});assert.equal(r.status,200,r.body.error);assert.equal(r.body.user.role,'encoder');assert.equal(r.body.user.barangay_id,null);encoderCookie=r.cookie.split(';')[0];
+r=await call('/api/me',{cookie:encoderCookie});assert.equal(r.body.user.barangay_id,null);
+r=await call('/api/dashboard?month=2026-11',{cookie:encoderCookie});assert.equal(r.body.totals.expected,85,'encoder has full citywide dashboard scope');
+r=await call('/api/census',{cookie:encoderCookie,data:{barangay_id:tamb.id,species_code:'goat',month:'2026-11',head_count:33,households:9}});assert.equal(r.status,200,r.body.error);
 r=await call('/api/census',{cookie:encoderCookie,data:{barangay_id:mac.id,species_code:'goat',month:'2026-11',head_count:33,households:''}});assert.equal(r.status,200,r.body.error);
-r=await call('/api/census?month=2026-11&barangay_id='+tamb.id,{cookie:encoderCookie});assert.equal(r.status,403);
-r=await call('/api/import/census',{cookie:adminCookie,data:{rows:[{month:'2026-11',barangay_psgc:mac.psgc.slice(1),species_code:'chicken',head_count:'22',households:'',notes:'CSV test'}]}});assert.equal(r.status,200,r.body.error);
-r=await call('/api/census?month=2026-11',{cookie:adminCookie});assert.equal(r.body.rows.length,3);
+r=await call('/api/census?month=2026-11&barangay_id='+tamb.id,{cookie:encoderCookie});assert.equal(r.status,200);assert.equal(r.body.rows.length,1);
+r=await call('/api/census?month=2026-11',{cookie:encoderCookie});assert.equal(r.body.rows.length,3);
+r=await call('/api/import/census',{cookie:encoderCookie,data:{rows:[{month:'2026-11',barangay_psgc:mac.psgc.slice(1),species_code:'chicken',head_count:'22',households:'',notes:'CSV test'},{month:'2026-11',barangay_psgc:tamb.psgc,species_code:'chicken',head_count:'17',households:'',notes:'CVO CSV test'}]}});assert.equal(r.status,200,r.body.error);assert.equal(r.body.imported,2);
+r=await call('/api/census?month=2026-11',{cookie:adminCookie});assert.equal(r.body.rows.length,5);
+r=await call('/api/import/vaccinations',{cookie:encoderCookie,data:{rows:[{date:'2026-11-05',barangay_psgc:tamb.psgc,species_code:'cat',vaccine:'Anti-rabies',doses:'14',site:'Tambulilid hall',notes:'CVO reports'},{date:'2026-11-05',barangay_psgc:mac.psgc,species_code:'dog',vaccine:'Anti-rabies',doses:'5',site:'Macabug hall',notes:'CVO reports'}]}});assert.equal(r.status,200,r.body.error);
+r=await call('/api/vaccinations?month=2026-11&barangay_id='+tamb.id,{cookie:encoderCookie});assert.equal(r.status,200);assert.equal(r.body.rows.length,1);
+// Existing vaccination in another barangay can be corrected by a citywide encoder.
+r=await call('/api/vaccinations',{cookie:encoderCookie,data:{id:vId,barangay_id:tamb.id,date:'2026-11-05',species_code:'dog',vaccine:'Anti-rabies',doses:35,site:'Tambulilid hall',notes:'Corrected barangay'}});assert.equal(r.status,200,r.body.error);
+r=await call('/api/vaccinations?month=2026-11&barangay_id='+tamb.id,{cookie:adminCookie});assert.equal(r.body.rows.length,2);
+assert.equal(r.body.rows.find(x=>x.id===vId).status,'pending','corrected vaccination requires re-approval');
+r=await call('/api/census/review',{cookie:encoderCookie,data:{id:censusId,status:'approved'}});assert.equal(r.status,403,'Encoders cannot approve');
+r=await call('/api/users',{cookie:encoderCookie});assert.equal(r.status,403,'Encoders cannot manage accounts');
+// Legacy encoder with a stored barangay_id is also citywide after the upgrade.
+r=await call('/api/users',{cookie:adminCookie,data:{action:'create',username:'encoder.legacy',full_name:'Older Encoder Account',role:'encoder',barangay_id:mac.id,password:'LegacyPassword##2026'}});assert.equal(r.status,200,r.body.error);
+r=await call('/api/login',{data:{username:'encoder.legacy',password:'LegacyPassword##2026'}});assert.equal(r.status,200,r.body.error);
+assert.equal(r.body.user.barangay_id,null,'legacy anchor never appears as a scope');
+r=await call('/api/dashboard?month=2026-11',{cookie:r.cookie.split(';')[0]});assert.equal(r.body.totals.expected,85,'existing encoders gain citywide scope');
 r=await call('/api/census/review',{cookie:adminCookie,data:{id:censusId,status:'rejected'}});assert.equal(r.status,200,r.body.error);
 r=await call('/api/dashboard?month=2026-11',{cookie:adminCookie});assert.equal(r.body.totals.animals,0,'rejected formerly approved census must no longer count');
 r=await call('/',{});assert.ok(r.headers.get('content-security-policy')?.includes("script-src 'self'"));
-console.log('PASS: live Worker handlers (bootstrap, auth, scoped authorization, census/review, vaccines/review, CSV summary, import, server-side status logic, static security headers)');
+console.log('PASS: citywide CVO Encoder roles, new/legacy accounts, 85-barangay dashboard, cross-barangay census/vaccination CRUD & CSV imports, admin-only approvals, export, auth and secure Worker headers');

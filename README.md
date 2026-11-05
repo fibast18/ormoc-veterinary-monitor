@@ -1,4 +1,4 @@
-# Ormoc City Veterinary Monitoring System (OCVMS) v1.0.1
+# Ormoc City Veterinary Monitoring System (OCVMS) v1.0.2
 
 **Animal/Livestock Census + Dog/Cat Vaccination Monitoring**  
 Prepared for City Veterinary Office, Ormoc City, Leyte  
@@ -15,7 +15,7 @@ This is a complete **Cloudflare Workers + D1** application. The source code belo
 - Citywide dashboards, barangay reporting completeness, species summaries, approved counts, and barangay comparisons.
 - Pending / approved / rejected workflow. Only **approved** records contribute to citywide dashboard figures; changing census/vaccination records returns them to **pending**.
 - **CSV export** of census, vaccinations, and approved citywide barangay summaries, UTF-8 and compatible with Excel/Apple Numbers; **CSV import** using bundled templates (imports split into 30-row batches to respect Cloudflare Free D1 query limits).
-- Login with `admin`, `encoder` (one assigned barangay only), and `viewer` (citywide read-only) roles. Users do **not** need Cloudflare accounts.
+- Login with `admin`, `encoder` (all 85 barangays; CVO-assigned staff), and `viewer` (citywide read-only) roles. Users do **not** need Cloudflare accounts.
 - Secure, HTTP-only SameSite session cookies, PBKDF2 password hashes, application-scoped authorization, login-attempt lockouts, SQL parameter binding, a server-side audit trail, strict-origin writes, and CSP headers.
 - Mobile-friendly interface; no paid front-end frameworks or external JavaScript libraries.
 
@@ -38,7 +38,7 @@ Read **DEPLOYMENT-GUIDE.md** before deployment. In brief:
 5. Cloudflare Workers & Pages → Create application → GitHub → your repo. Worker name must be **`ormoc-veterinary-monitor`** (same as `wrangler.toml`); `main` branch; build command **blank**; deploy command **`npx wrangler deploy`**.
 6. In the deployed Worker's **Settings → Variables and Secrets**, add a **Secret** named `BOOTSTRAP_TOKEN`. Use an unpredictable random string of at least 32 characters, **not** a simple shared password. Never commit it to GitHub.
 7. Open your Worker site. On the setup page, enter the token once and create the first city administrator. **Remove the bootstrap secret after setup** if you no longer need it.
-8. As administrator, create city viewers and barangay encoder accounts. Share the app's URL and their login credentials privately; no GitHub or Cloudflare accounts are required for them.
+8. As administrator, create city viewers and citywide Encoder accounts. No barangay assignment is required. Share the app's URL and their login credentials privately; no GitHub or Cloudflare accounts are required for them.
 
 ### Example Wrangler commands (Mac terminal, optional alternative)
 
@@ -81,12 +81,12 @@ node --experimental-sqlite tests/integration.mjs
 ## Scope, operational requirements, limitations
 
 - **Internet is required** to access and save shared Cloudflare D1 records. This release is not offline-first and has no offline queue.
-- **This release has not been independently security audited.** Before collecting personally identifiable animal owner information, extend the security/privacy design and seek LGU privacy/DPO review. In v1.0.1, enter aggregate counts only; do **not** put names, addresses, phone numbers, or other personal data in free-text notes.
+- **This release has not been independently security audited.** Before collecting personally identifiable animal owner information, extend the security/privacy design and seek LGU privacy/DPO review. In v1.0.2, enter aggregate counts only; do **not** put names, addresses, phone numbers, or other personal data in free-text notes.
 - Vaccination entry errors can be edited (which makes the record pending), or a City Admin can **reject** previously approved data to exclude it from official totals. There is no bulk deletion button.
 - The `Other` vaccine category is broad. Use notes for a non-rabies vaccine product; specific vaccine catalogs can be added later.
 - CSV vaccination imports are additive; importing the exact same file twice will **double-count doses** if both copies are approved. Review before approval.
 - Per-month list views and CSV exports cap at 3,000 and 10,000 records respectively. For larger data volumes, add pagination.
-- Current passwords are shared by the City Admin directly; there is no self-service password recovery or MFA in v1.0.1.
+- Current passwords are shared by the City Admin directly; there is no self-service password recovery or MFA in v1.0.2.
 - A public source repository is acceptable if no secrets or database exports are committed, but access to the live data is **not public**. Only authenticated app users can access records.
 - The city should validate species classifications, survey frequency, and data approval policy before treating the dashboard as an official reporting system.
 
@@ -99,12 +99,24 @@ Cloudflare Free plan currently offers a Workers request allowance and D1 quotas;
 
 As of November 2026, published limits include **100,000 Workers requests/day**, **5 million D1 rows read/day**, **100,000 rows written/day**, and **500 MB max per database** on Free. A small 85-barangay pilot can often fit within these limits, but actual cost/availability depends on usage and account quotas. Daily usage overages on Free may cause failures until quota resets.
 
-**Version 1.0.1 · Cloudflare password hashing fix · November 5, 2026**
+**Version 1.0.2 · Cloudflare password hashing fix · November 5, 2026**
 
-## v1.0.1 Cloudflare compatibility fix
+## v1.0.2 Cloudflare compatibility fix
 
 - Fixed initial administrator creation/login failure on Cloudflare Workers caused by the v1.0.0 PBKDF2 iteration count exceeding the production runtime limit (210,000 requested, 100,000 supported). The code now uses 100,000.
 - Added an automated PBKDF2-limit check to prevent this release-blocking regression.
 - Existing D1 schema, 85-barangay roster, saved data, admin secret and all system modules remain unchanged; **do not rerun or wipe database migrations**.
 - The included `wrangler.toml` uses the D1 Database ID observed in the user’s Cloudflare deployment. Confirm it matches the intended database before deploying elsewhere.
 - For government production deployment, implement stronger password hashing via supported Argon2id or equivalent following IT/DPO security review; 100,000 PBKDF2-SHA-256 rounds is only a Workers-compatible hotfix.
+
+## v1.0.2 — Citywide CVO Encoder workflow (November 5, 2026)
+
+- Role label changed from **Barangay Encoder** to **Encoder**. CVO creates accounts for office-appointed Encoders; no barangay assignment is requested.
+- Each Encoder can select, review, input, update and CSV-import records for **any of the 85 barangays**. The same applies to previously created `encoder` accounts after deployment.
+- Records entered or imported by Encoders remain **pending** until a City Admin reviews/approves them. Encoders cannot approve records, manage users or view the admin-only audit page.
+- Census import accepts records spanning many barangays using their individual `barangay_psgc` codes; vaccination CSV import works the same way. Files must be **CSV UTF-8**, exported from Excel/Numbers, not native `.xlsx` files.
+- **No new database migration is needed for this release**. The original v1.0.1 users table enforces a non-null `barangay_id` for `encoder` rows. For new Encoders, the application stores a valid internal compatibility reference without using it as a barangay assignment or as an access restriction. The API and UI report the role scope as All barangays. A future schema maintenance migration can remove this obsolete column requirement.
+- All saved users, authentication records, animals, vaccination data, approvals, passwords, and the Cloudflare D1 binding are retained. **Do not recreate or reset the D1 database, and do not reapply old migrations.**
+- **Security note:** Previously barangay-restricted Encoder accounts gain citywide access immediately on v1.0.2. CVO should check existing accounts under Users and disable any accounts that should not have this broader access.
+
+**Safe update:** Upload the complete v1.0.2 files to the same GitHub repository branch `main`, preserve the working `wrangler.toml` Database ID, confirm the Cloudflare Worker publishes v1.0.2, and refresh the website. No SQL action needed.

@@ -1,5 +1,5 @@
-/* Ormoc City Veterinary Monitoring System v1.0.1 — Cloudflare Workers + D1 */
-const VERSION = '1.0.1';
+/* Ormoc City Veterinary Monitoring System v1.0.2 — Cloudflare Workers + D1 */
+const VERSION = '1.0.2';
 const SESSION_HOURS = 12;
 // Cloudflare Workers production rejects PBKDF2 deriveBits over 100,000 iterations.
 // Do not raise without migrating to a supported password KDF and versioned hashes.
@@ -43,7 +43,8 @@ async function identity(req,db) {
   const token=cookies(req).vet_session;
   if(!token||!/^[-_A-Za-z0-9]{40,}$/.test(token))return null;
   const hash=await sha(token);
-  return await db.prepare(`SELECT u.id,u.username,u.full_name,u.role,u.barangay_id,u.active
+  return await db.prepare(`SELECT u.id,u.username,u.full_name,u.role,
+      CASE WHEN u.role='encoder' THEN NULL ELSE u.barangay_id END AS barangay_id,u.active
     FROM sessions s JOIN users u ON u.id=s.user_id
     WHERE s.token_hash=? AND s.expires_at > datetime('now') AND u.active=1`).bind(hash).first();
 }
@@ -52,11 +53,9 @@ async function log(db,user,action,entity,entity_id='',detail='') {
 }
 function writable(u) {if(u.role==='viewer')throw BAD_REQUEST('View-only users cannot modify records.',403);}
 function admin(u) {if(u.role!=='admin')throw BAD_REQUEST('City administrator access required.',403);}
+// All authenticated roles can filter by any barangay; the encoder role is citywide.
+// Write access is governed by writable(), while approvals/user administration require admin().
 function scopeId(u,raw) {
-  if(u.role==='encoder'){
-    if(raw!==undefined&&raw!==null&&raw!==''&&Number(raw)!==u.barangay_id)throw BAD_REQUEST('Not allowed to access another barangay.',403);
-    return u.barangay_id;
-  }
   if(raw===undefined||raw===null||raw==='')return null;
   return int(raw,'Barangay ID',999999,1);
 }
@@ -77,7 +76,8 @@ function vaccineInput(x,u) {
 async function createSession(db,u,req) {
   const token=base64(crypto.getRandomValues(new Uint8Array(36))).replaceAll('+','-').replaceAll('/','_').replaceAll('=','');
   await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await sha(token),u.id,plusHours(SESSION_HOURS)).run();
-  return response({ok:true,user:{id:u.id,username:u.username,full_name:u.full_name,role:u.role,barangay_id:u.barangay_id}},200,{'set-cookie':cookie(token,req)});
+  return response({ok:true,user:{id:u.id,username:u.username,full_name:u.full_name,role:u.role,
+    barangay_id:u.role==='encoder'?null:u.barangay_id}},200,{'set-cookie':cookie(token,req)});
 }
 async function api(req,env) {
   if(!env.DB)return failure('D1 database binding DB is missing. Check Cloudflare Worker settings.',503);
@@ -202,7 +202,6 @@ async function api(req,env) {
     if(payload.id){
       const existing=await db.prepare('SELECT barangay_id FROM vaccinations WHERE id=?').bind(id).first();
       if(!existing)throw BAD_REQUEST('Vaccination record not found.',404);
-      if(u.role==='encoder'&&existing.barangay_id!==u.barangay_id)throw BAD_REQUEST('Not permitted.',403);
       await db.prepare(`UPDATE vaccinations SET barangay_id=?,date=?,species_code=?,vaccine=?,doses=?,site=?,notes=?,
         status='pending',updated_by=?,updated_at=CURRENT_TIMESTAMP,approved_by=NULL,approved_at=NULL WHERE id=?`).bind(x.barangay_id,x.date,x.species_code,x.vaccine,x.doses,x.site,x.notes,u.id,id).run();
     } else {
@@ -221,8 +220,10 @@ async function api(req,env) {
     return response({ok:true});
   }
   if(path==='/api/users'&&method==='GET'){
-    admin(u);return response({ok:true,rows:(await db.prepare(`SELECT u.id,u.username,u.full_name,u.role,u.barangay_id,u.active,u.created_at,b.name AS barangay
-      FROM users u LEFT JOIN barangays b ON b.id=u.barangay_id ORDER BY u.created_at DESC`).all()).results});
+    admin(u);return response({ok:true,rows:(await db.prepare(`SELECT u.id,u.username,u.full_name,u.role,
+        CASE WHEN u.role='encoder' THEN NULL ELSE u.barangay_id END AS barangay_id,
+        u.active,u.created_at,NULL AS barangay
+      FROM users u ORDER BY u.created_at DESC`).all()).results});
   }
   if(path==='/api/users'&&method==='POST'){
     admin(u);const x=await body(req),action=clean(x.action||'create',20);
@@ -230,12 +231,19 @@ async function api(req,env) {
       const username=checkUsername(x.username),full_name=clean(x.full_name,90),role=clean(x.role,20),password=checkPassword(x.password);
       if(full_name.length<2)throw BAD_REQUEST('Enter full name.');
       if(!['admin','encoder','viewer'].includes(role))throw BAD_REQUEST('Invalid user role.');
-      const barangay_id=role==='encoder'?int(x.barangay_id,'Barangay ID',999999,1):null;
-      if(barangay_id)await knownBarangay(db,barangay_id);
+      // Backward-compatible storage: original users table CHECK requires an encoder
+      // to have a non-NULL barangay_id. Store a valid legacy anchor only, NEVER use
+      // it for authorization or expose it as an assignment. No schema rebuild needed.
+      let barangay_id=null;
+      if(role==='encoder'){
+        const anchor=await db.prepare('SELECT id FROM barangays ORDER BY id LIMIT 1').first();
+        if(!anchor)throw BAD_REQUEST('The 85-barangay roster has not been loaded.',503);
+        barangay_id=anchor.id;
+      }
       const salt=base64(crypto.getRandomValues(new Uint8Array(16))),hash=await passwordHash(password,salt),id=crypto.randomUUID();
       await db.prepare(`INSERT INTO users(id,username,full_name,role,barangay_id,salt,password_hash,created_by)
         VALUES(?,?,?,?,?,?,?,?)`).bind(id,username,full_name,role,barangay_id,salt,hash,u.id).run();
-      await log(db,u,'create','user',id,username+' — '+role);return response({ok:true});
+      await log(db,u,'create','user',id,username+' — '+role+(role==='encoder'?' (all 85 barangays)':''));return response({ok:true});
     }
     const id=clean(x.id,60),target=await db.prepare('SELECT id,username,active,role FROM users WHERE id=?').bind(id).first();
     if(!target)throw BAD_REQUEST('User not found.',404);

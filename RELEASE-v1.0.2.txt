@@ -1,0 +1,17 @@
+Ormoc City Veterinary Monitoring System v1.0.2
+Release date: November 5, 2026
+
+New: CVO-appointed Encoder role for citywide reporting across all 85 barangays.
+- Replaces visible title Barangay Encoder with Encoder.
+- CVO Admin creates encoders without barangay assignment.
+- Existing and new encoders can enter/edit/import census and vaccination reports from any barangay, filter citywide, and export CSV.
+- Admin-only review/approval, user management, and audit roles are unchanged.
+- New process explanation on dashboard and Users page.
+- Preserves all existing D1 data, logins, password hashes, migrations and the v1.0.1 hashing compatibility fix.
+- No new SQL migrations.
+
+IMPORTANT: Existing encoders now gain citywide access. The City Veterinary Office must review active accounts before broad rollout.
+
+DEPLOYMENT: upload all files from this ZIP to the existing GitHub repository and redeploy. Do not rerun existing migrations or create a new database. Preserve the deployed D1 UUID in wrangler.toml.
+
+NOTES: Native Excel .xlsx uploads are not supported by the original app; CSV (UTF-8) imports remain available.

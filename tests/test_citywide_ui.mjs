@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const app=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+const api=readFileSync(new URL('../src/worker.js',import.meta.url),'utf8');
+assert.match(app,/encoder:'Encoder'/);
+assert.match(app,/<option value="encoder">Encoder<\/option>/);
+assert.doesNotMatch(app,/<option value="encoder">Barangay Encoder/);
+assert.doesNotMatch(app,/id="user-barangay-field"/);
+assert.doesNotMatch(app,/state\.user\.role==='encoder'\)state\.barangay/);
+assert.match(app,/<option value="">All 85 barangays<\/option>/);
+assert.match(app,/CVO reporting workflow/);
+assert.match(app,/Version 1\.0\.2/);
+assert.match(api,/const VERSION = '1\.0\.2'/);
+assert.match(api,/const PBKDF2_ITERATIONS = 100000/);
+assert.doesNotMatch(api,/Not allowed to access another barangay/);
+console.log('PASS: all-city encoder labels, unrestricted barangay picker, no assigned-barangay field and v1.0.2 version');

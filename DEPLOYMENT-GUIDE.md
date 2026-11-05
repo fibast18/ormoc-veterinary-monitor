@@ -1,4 +1,4 @@
-# Deploy OCVMS v1.0.1: GitHub + Cloudflare D1
+# Deploy OCVMS v1.0.2: GitHub + Cloudflare D1
 
 This is a GitHub-connected **Cloudflare Worker**, not a GitHub Pages app. GitHub hosts the source files, Cloudflare hosts the secure API + the user interface, and Cloudflare D1 stores the data for all devices.
 
@@ -16,7 +16,7 @@ This is a GitHub-connected **Cloudflare Worker**, not a GitHub Pages app. GitHub
 2. Find **D1 SQL Databases** in the Cloudflare dashboard (the menu label may vary).
 3. Create a database **exactly** named `ormoc-vet-monitor`.
 4. Copy its **Database ID (UUID)**.
-5. In `wrangler.toml`, **confirm** the `database_id` matches the D1 Database ID shown in your Cloudflare dashboard. This v1.0.1 package includes the Database ID observed in your successful November 5 deployment. If you deploy into another Cloudflare account or database, replace it with that database’s actual UUID. Keep `binding = "DB"` and `database_name = "ormoc-vet-monitor"` unchanged.
+5. In `wrangler.toml`, **confirm** the `database_id` matches the D1 Database ID shown in your Cloudflare dashboard. This v1.0.2 package includes the Database ID observed in your successful November 5 deployment. If you deploy into another Cloudflare account or database, replace it with that database’s actual UUID. Keep `binding = "DB"` and `database_name = "ormoc-vet-monitor"` unchanged.
 6. Save the GitHub commit to `main`.
 
 ## Part C: Initialize the database tables
@@ -73,15 +73,15 @@ The `--remote` part is essential: without it, only the local simulation database
 7. **Recommended:** remove the `BOOTSTRAP_TOKEN` secret after successful first setup to limit its exposure.
 8. Keep your administrator account credentials private. **Never paste the secret in GitHub, screenshots, tickets or shared chats.**
 
-## Part F: Add barangay encoders and start monitoring
+## Part F: Assign citywide CVO Encoders and start monitoring
 
-1. Sign in as City Admin → **Users** → enter full name, unique username and a temporary password.
-2. Choose **Barangay Encoder**, then select one of the 85 barangays. Repeat for participating barangays.
-3. If appropriate, create **City Viewer** accounts for supervisors; they can read but cannot edit data.
-4. Give staff the Worker website URL, username and temporary password **privately**.
-5. Encoders open the app using any modern browser on their phones or computers. **They do not need Cloudflare or GitHub accounts.**
-6. Encoders submit monthly animal headcounts and daily dog/cat vaccination activities. These start **pending**.
-7. City Admin signs in and **approves** or rejects records. Approved values appear in the Dashboard.
+1. CVO appoints staff responsible for receiving barangay reports and data encoding.
+2. Sign in as City Admin → **Users** → enter full name, unique username and a temporary password.
+3. Choose **Encoder** (citywide access across all 85 barangays). Do not assign a single barangay. Repeat for additional CVO encoders.
+4. Give assigned staff the Worker website URL, username and temporary password **privately**; they do not need GitHub or Cloudflare accounts.
+5. CVO staff collect census/vaccination figures from any barangay. An Encoder chooses the barangay in the entry form and types the records; or downloads the provided CSV template, fills it using Excel/Numbers and imports the file with records across many barangays.
+6. Every new or changed entry is marked **pending**, regardless of the barangay. City Admin verifies and **approves/rejects** the entries; only approved values appear in dashboards.
+7. If appropriate, create **City Viewer** accounts for supervisors; they can read but not change data.
 
 ## Part G: Optional link from mysomis.com
 
@@ -124,7 +124,7 @@ Retain regular database backups securely outside GitHub and Google-indexable web
 ## Security / privacy / limitations
 
 - This initial version records aggregate per-species counts and aggregate doses, **not** pet owner data or uniquely identified animals. Do not add personal names, residential addresses, phone numbers, or medical details in notes. Obtain the City Government's IT/DPO signoff prior to official production use.
-- Passwords are hashed; only the app administrator can create/reset user credentials. There is no self-service password reset or multifactor authentication in v1.0.1.
+- Passwords are hashed; only the app administrator can create/reset user credentials. There is no self-service password reset or multifactor authentication in v1.0.2.
 - The system requires an internet connection to read/write D1. The UI is mobile-friendly but there is no offline editing.
 - Cloudflare Workers Free and D1 Free have daily/storage limits; verify before broad rollout.
 - For regular government data processing, establish access reviews, retention policies, approvals, incident response, backups, and a policy specifying who can certify official numbers.
@@ -138,10 +138,22 @@ Retain regular database backups securely outside GitHub and Google-indexable web
 - Cloudflare D1 free-tier limits: https://developers.cloudflare.com/d1/platform/pricing/
 - Cloudflare D1 export: https://developers.cloudflare.com/d1/best-practices/import-export-data/
 
-## v1.0.1 fix for first-administrator error
+## v1.0.2 fix for first-administrator error
 
 The original v1.0.0 Worker used PBKDF2-SHA-256 with 210,000 iterations, which fails on Cloudflare Workers production (`NotSupportedError`: max 100,000 iterations). Version 1.0.1 changes the call to 100,000 iterations. No SQL migration is needed and existing D1 data must not be deleted. In the case of a failed initial bootstrap with zero users, simply deploy the updated Worker and submit the setup form again. The `BOOTSTRAP_TOKEN` secret stays in the Worker settings.
 
 For the user’s current deployment, edit `src/worker.js` on the GitHub `main` branch or replace the repository files with this release. GitHub-triggered deployments keep the repository and live Worker synchronized. A manual `npx wrangler deploy` from this folder also works, but should be followed by the same source update on GitHub to prevent a later auto-deployment from restoring v1.0.0.
 
 **Security consideration:** 100,000 PBKDF2-SHA-256 iterations satisfies the Worker execution limit but is below contemporary password-storage strength recommendations. This is a compatibility hotfix, not a security audit. Before collecting official operational data, arrange a security review and migrate to a modern password hashing approach such as Argon2id with a suitable runtime/library, while versioning password hash parameters. Continue requiring long passwords, lockouts, and private credential distribution.
+
+## Update from an already running v1.0.1 website to v1.0.2
+
+1. The existing live D1 database is preserved. **Do not rerun `0001_schema.sql` or `0002_barangays.sql` and do not create a second D1 database.**
+2. Replace the project source in your existing GitHub `main` branch with the v1.0.2 files. Do not include your D1 export or any secret in GitHub.
+3. Verify `wrangler.toml` still points to the same deployed database (`ormoc-vet-monitor` and its UUID), and check that Cloudflare GitHub deployment completes successfully. You can also run `npx wrangler deploy` from the updated project folder if GitHub CI did not deploy.
+4. Refresh the deployed website and verify **v1.0.2** in the footer. Existing admin logins/data stay intact.
+5. Open **Users** and check all old encoder accounts: they now have all-85-barangay access. Disable accounts if broader access is not appropriate.
+6. Create a new **Encoder** account without a barangay selection. Test submitting a pending census row for one barangay and a vaccination event for a different barangay; then approve from a City Admin login.
+7. Backup D1 before major releases using `npx wrangler d1 export ormoc-vet-monitor --remote --output=./ormoc-vet-backup.sql`. Keep the backup out of GitHub.
+
+No new SQL migration is needed for this release; original schema requires a legacy non-null encoder barangay reference but the application never uses that value for access control or displays it as an assignment.

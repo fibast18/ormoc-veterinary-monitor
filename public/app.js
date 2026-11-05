@@ -1,4 +1,4 @@
-/* OCVMS v1.0.1 — dependency-free client. Shared data lives only in Cloudflare D1. */
+/* OCVMS v1.0.2 — dependency-free client. Shared data lives only in Cloudflare D1. */
 const app=document.querySelector('#app');
 const nowPH=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`;};
 const state={user:null,catalog:null,page:'dashboard',month:nowPH().slice(0,7),barangay:'',data:null,census:[],vaccinations:[],users:[],audit:[],search:''};
@@ -14,12 +14,12 @@ async function api(path,opts={}){
 }
 const post=(path,data)=>api(path,{method:'POST',body:JSON.stringify(data)});
 const params=x=>new URLSearchParams(x).toString();
-const roleText=r=>({admin:'City Admin',encoder:'Barangay Encoder',viewer:'City Viewer'}[r]||r);
+const roleText=r=>({admin:'City Admin',encoder:'Encoder',viewer:'City Viewer'}[r]||r);
 const allowedWrite=()=>state.user?.role!=='viewer';
 const isAdmin=()=>state.user?.role==='admin';
 function brgyOptions(selected='',all=false){
  const rows=state.catalog?.barangays||[];
- return `${all&&state.user?.role!=='encoder'?'<option value="">All 85 barangays</option>':''}`+rows.filter(b=>state.user?.role!=='encoder'||b.id===state.user.barangay_id).map(b=>`<option value="${b.id}" ${String(b.id)===String(selected)?'selected':''}>${esc(b.name)}</option>`).join('');
+ return `${all?'<option value="">All 85 barangays</option>':''}`+rows.map(b=>`<option value="${b.id}" ${String(b.id)===String(selected)?'selected':''}>${esc(b.name)}</option>`).join('');
 }
 function speciesOptions(selected='',petOnly=false){return (state.catalog?.species||[]).filter(x=>!petOnly||['cat','dog'].includes(x.code)).map(x=>`<option value="${esc(x.code)}" ${x.code===selected?'selected':''}>${esc(x.name)}</option>`).join('');}
 const stat=(label,value,foot,featured=false)=>`<div class="stat ${featured?'featured':''}"><small>${esc(label)}</small><strong>${fmt(value)}</strong><em>${esc(foot)}</em></div>`;
@@ -38,7 +38,8 @@ function dashboardView(){
  const category=Object.fromEntries((state.catalog?.species||[]).map(x=>[x.code,x]));
  const bars=d.species.slice().sort((a,b)=>b.total-a.total).map(x=>`<div class="species-row"><span>${esc(category[x.species_code]?.name||x.species_code)}</span><div class="bar"><span style="width:${Math.max(.5,100*x.total/max)}%"></span></div><strong>${fmt(x.total)}</strong></div>`).join('');
  const brgyRows=d.barangays.filter(x=>x.name.toLowerCase().includes(state.search.toLowerCase())).map(b=>`<tr><td><strong>${esc(b.name)}</strong><span class="user-meta">${esc(b.classification)}</span></td><td class="number">${fmt(b.animals)}</td><td class="number">${fmt(b.livestock)}</td><td class="number">${fmt(b.poultry)}</td><td class="number">${fmt(b.dogs)}</td><td class="number">${fmt(b.cats)}</td><td class="number">${fmt(b.vaccinated_dogs)}</td><td class="number">${fmt(b.vaccinated_cats)}</td><td>${b.species_reported?'<span class="status approved">REPORTED</span>':'<span class="flag">Not reported</span>'}</td></tr>`);
- return head('Citywide Monitoring Dashboard','Approved livestock inventories and anti-rabies vaccinations by barangay.')+filterToolbar('summary')+
+ return head('Citywide Monitoring Dashboard','Approved livestock inventories and anti-rabies vaccinations by barangay.')+
+ `<div class="panel" style="margin-bottom:18px"><strong>CVO reporting workflow:</strong> CVO assigns an Encoder → collects barangay survey and vaccination reports → Encoder selects any of the 85 barangays and enters records or imports CSV → City Admin reviews and approves → approved results appear in citywide reports.</div>`+filterToolbar('summary')+
  `<div class="grid-stats">${stat('Animal population',t.animals||0,'Approved census snapshot · '+state.month,true)}${stat('Livestock',t.livestock||0,'Carabao, cattle, swine, goats, sheep & horses')}${stat('Poultry',t.poultry||0,'Chickens, ducks, turkeys & quails')}${stat('Barangays reporting',t.reporting||0,`of ${t.expected||0} in selected view`)}
  ${stat('Dogs inventoried',t.dogs||0,'Approved census')}${stat('Cats inventoried',t.cats||0,'Approved census')}${stat('Dog anti-rabies doses',t.vaccinated_dogs||0,'Approved administrations in month')}${stat('Cat anti-rabies doses',t.vaccinated_cats||0,'Approved administrations in month')}</div>
  <div class="grid-two"><div class="panel"><div class="panel-head"><h3>Monthly reporting completeness</h3><span class="flag">${t.reporting||0} / ${t.expected||0}</span></div>
@@ -52,14 +53,14 @@ function dashboardView(){
 function reviewButtons(entity,r){return isAdmin()?`<button class="btn tiny" data-action="review" data-entity="${entity}" data-id="${esc(r.id)}" data-status="approved">Approve</button><button class="btn tiny danger" data-action="review" data-entity="${entity}" data-id="${esc(r.id)}" data-status="rejected">Reject</button>`:'';}
 function censusView(){
  const rows=state.census.map(r=>`<tr><td><strong>${esc(r.barangay)}</strong><span class="user-meta">${esc(r.psgc)}</span></td><td>${esc(r.species_name)}</td><td class="number">${fmt(r.head_count)}</td><td class="number">${fmt(r.households)}</td><td>${statusBadge(r.status)}</td><td title="${esc(r.notes)}">${esc((r.notes||'').slice(0,60))}</td><td>${esc(r.updated_at||'')}</td><td>${reviewButtons('census',r)}</td></tr>`);
- return head('Animal & Livestock Census','Maintain monthly animal population snapshots for each barangay and species.')+filterToolbar('census')+
+ return head('Animal & Livestock Census','CVO Encoders may record monthly livestock and animal counts from any barangay.')+filterToolbar('census')+
  `<div class="formsplit"><div class="panel"><h3>Save monthly inventory</h3><p class="help">One total per barangay, species, and month. Saving an existing entry replaces its count and returns it to pending review.</p>
  ${allowedWrite()?`<form id="census-form"><div class="entry-grid"><div class="field wide"><label>Barangay</label><select name="barangay_id" required>${brgyOptions(state.barangay)}</select></div>
  <div class="field wide"><label>Animal species</label><select name="species_code" required>${speciesOptions('swine')}</select></div>
  <div class="field"><label>Reporting month</label><input type="month" name="month" value="${esc(state.month)}" required></div>
  <div class="field"><label>Head count</label><input type="number" name="head_count" min="0" max="99999999" required placeholder="0"></div>
  <div class="field mobile-wide"><label>Households raising species (optional)</label><input type="number" name="households" min="0" max="9999999" value="0"></div>
- <div class="field wide"><label>Source or remarks</label><textarea name="notes" maxlength="600" placeholder="e.g., household survey, barangay veterinary visit"></textarea></div></div>
+ <div class="field wide"><label>Source or remarks</label><textarea name="notes" maxlength="600" placeholder="e.g., CVO collection date, source barangay report"></textarea></div></div>
  <button class="btn full" type="submit">Save inventory · Pending review</button></form>`:'<p class="help">Your account has read-only access.</p>'}</div>
  <div class="panel"><div class="panel-head"><h3>Inventory records</h3><span class="muted">${state.census.length} matching records</span></div>
  ${table(['Barangay','Species',{label:'Heads',number:true},{label:'Households',number:true},'Status','Remarks','Updated','Review'],rows)}
@@ -69,7 +70,7 @@ function censusView(){
 }
 function vaccinationView(){
  const rows=state.vaccinations.map(r=>`<tr><td>${esc(r.date)}</td><td><strong>${esc(r.barangay)}</strong></td><td>${r.species_code==='dog'?'Dog':'Cat'}</td><td>${esc(r.vaccine)}</td><td class="number">${fmt(r.doses)}</td><td>${esc(r.site||'—')}</td><td>${statusBadge(r.status)}</td><td>${allowedWrite()?`<button class="btn tiny ghost" data-action="edit-vaccination" data-id="${esc(r.id)}">Edit</button>`:''}${reviewButtons('vaccinations',r)}</td></tr>`);
- return head('Dog & Cat Vaccination Monitoring','Record dates, vaccine types, doses administered, and vaccination sites.')+filterToolbar('vaccinations')+
+ return head('Dog & Cat Vaccination Monitoring','CVO Encoders may record vaccination activities from any barangay.')+filterToolbar('vaccinations')+
  `<div class="formsplit"><div class="panel"><h3>Record vaccination activity</h3><p class="help">Use separate records for dogs and cats. Doses may include repeat vaccinations of the same animal.</p>
  ${allowedWrite()?`<form id="vaccination-form"><input type="hidden" name="id" value=""><div class="entry-grid"><div class="field wide"><label>Barangay</label><select name="barangay_id" required>${brgyOptions(state.barangay)}</select></div>
  <div class="field"><label>Date</label><input type="date" name="date" value="${nowPH()}" required></div><div class="field"><label>Species</label><select name="species_code">${speciesOptions('dog',true)}</select></div>
@@ -91,13 +92,12 @@ function barangayView(){
 }
 function userView(){
  const rows=state.users.map(x=>`<tr><td><strong>${esc(x.full_name)}</strong><span class="user-meta">${esc(x.username)}</span></td><td>${esc(roleText(x.role))}</td><td>${esc(x.barangay||'All barangays')}</td><td><span class="status ${x.active?'approved':'rejected'}">${x.active?'ACTIVE':'DISABLED'}</span></td><td>${esc(x.created_at||'')}</td><td><button class="btn tiny ghost" data-action="reset-password" data-id="${esc(x.id)}" data-name="${esc(x.username)}">Reset password</button>${x.id!==state.user.id?`<button class="btn tiny ${x.active?'danger':'ghost'}" data-action="toggle-user" data-id="${esc(x.id)}" data-name="${esc(x.username)}">${x.active?'Disable':'Enable'}</button>`:''}</td></tr>`);
- return head('User & Access Management','Create City Veterinary administrators, barangay encoders, and view-only accounts.')+
- `<div class="formsplit"><div class="panel"><h3>Create user</h3><p class="help">Barangay encoders can view and change records only for their assigned barangay. They do not need a Cloudflare account.</p>
+ return head('User & Access Management','Assign CVO Encoders with access to all 85 barangays, administrators, and read-only viewers.')+
+ `<div class="formsplit"><div class="panel"><h3>Create user</h3><p class="help">CVO-appointed Encoders collect reports from any barangay and may enter or import census and vaccination data for all 85 barangays. Submissions require City Admin approval. No Cloudflare account is needed.</p>
  <form id="user-form"><div class="entry-grid"><div class="field wide"><label>Full name</label><input name="full_name" required minlength="2" maxlength="90"></div>
- <div class="field wide"><label>Username</label><input name="username" required minlength="3" maxlength="32" placeholder="e.g. macabug.vet"></div>
+ <div class="field wide"><label>Username</label><input name="username" required minlength="3" maxlength="32" placeholder="e.g. cvo.encoder1"></div>
  <div class="field wide"><label>Temporary password (minimum 12 characters)</label><input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></div>
- <div class="field wide"><label>Access level</label><select name="role" id="role-select"><option value="encoder">Barangay Encoder</option><option value="viewer">City Viewer</option><option value="admin">City Admin</option></select></div>
- <div class="field wide" id="user-barangay-field"><label>Assigned barangay</label><select name="barangay_id">${brgyOptions()}</select></div></div>
+ <div class="field wide"><label>Access level</label><select name="role" id="role-select"><option value="encoder">Encoder</option><option value="viewer">City Viewer</option><option value="admin">City Admin</option></select></div></div>
  <button type="submit" class="btn full">Create account</button></form><p class="help" style="margin-top:12px">Share the account password privately; do not post it in public documents or GitHub.</p></div>
  <div class="panel"><div class="panel-head"><h3>Accounts</h3><span class="muted">${state.users.length} users</span></div>${table(['Name / Username','Role','Access scope','Status','Created','Manage'],rows)}</div></div>`;
 }
@@ -116,18 +116,17 @@ async function authPage(){
  <div class="field"><label>Admin password (minimum 12 characters)</label><input type="password" name="password" minlength="12" maxlength="128" required></div><button class="btn full" type="submit">Create first administrator</button></form>`:
  `<form id="login-form"><div class="field"><label>Username</label><input name="username" autocomplete="username" required></div>
  <div class="field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div><button class="btn full" type="submit">Sign in</button></form>`}
- <div id="auth-error"></div><p class="help text-center" style="margin-top:25px">Cloudflare Workers + D1 · v1.0.1<br>Developed by: Engr. Rico J. Pono</p></div></div>`;
+ <div id="auth-error"></div><p class="help text-center" style="margin-top:25px">Cloudflare Workers + D1 · v1.0.2<br>Developed by: Engr. Rico J. Pono</p></div></div>`;
 }
 function shell(){
- app.innerHTML=`<header class="topbar"><div class="brand"><div class="brand-icon">✚</div><div><h1>ORMOC CITY VETERINARY</h1><small>Animal & Vaccination Monitoring System · v1.0.1</small></div></div>
+ app.innerHTML=`<header class="topbar"><div class="brand"><div class="brand-icon">✚</div><div><h1>ORMOC CITY VETERINARY</h1><small>Animal & Vaccination Monitoring System · v1.0.2</small></div></div>
  <div class="account"><div class="account-details"><strong>${esc(state.user.full_name)}</strong><small>${esc(roleText(state.user.role))}</small></div><button class="btn light" data-action="logout">Sign out</button></div></header>
- <div class="layout"><nav class="tabs" id="tabs"></nav><div id="flash"></div><main id="content"></main><footer class="footer">City Veterinary Monitoring · Ormoc City, Leyte · 85 barangays<br>Developed by: Engr. Rico J. Pono · Version 1.0.1</footer></div>`;
+ <div class="layout"><nav class="tabs" id="tabs"></nav><div id="flash"></div><main id="content"></main><footer class="footer">City Veterinary Monitoring · Ormoc City, Leyte · 85 barangays<br>Developed by: Engr. Rico J. Pono · Version 1.0.2</footer></div>`;
 }
 function tabs(){const defs=[['dashboard','▦ Dashboard'],['census','♧ Animal Census'],['vaccinations','✚ Vaccinations'],['barangays','◫ Barangays'],...(isAdmin()?[['users','♙ Users'],['audit','☷ Audit Trail']]:[])];$('#tabs').innerHTML=defs.map(([p,t])=>`<button data-action="nav" data-page="${p}" class="${state.page===p?'active':''}">${t}</button>`).join('');}
-function draw(){tabs();const v={dashboard:dashboardView,census:censusView,vaccinations:vaccinationView,barangays:barangayView,users:userView,audit:auditView}[state.page]||dashboardView;$('#content').innerHTML=v();const field=$('#user-barangay-field');if(field)field.classList.toggle('hidden',$('#role-select').value!=='encoder');}
+function draw(){tabs();const v={dashboard:dashboardView,census:censusView,vaccinations:vaccinationView,barangays:barangayView,users:userView,audit:auditView}[state.page]||dashboardView;$('#content').innerHTML=v();}
 async function load(){
  if(!state.user||!state.catalog)return;
- if(state.user.role==='encoder')state.barangay=String(state.user.barangay_id);
  const q=params({month:state.month,...(state.barangay?{barangay_id:state.barangay}:{})});
  if(['dashboard','barangays'].includes(state.page))state.data=await api('/dashboard?'+q);
  if(state.page==='census')state.census=(await api('/census?'+q)).rows;
@@ -140,8 +139,7 @@ async function init(){
  try{
   const x=await api('/me');state.user=x.user;
   state.catalog=await api('/catalog');
-  if(state.user.role==='encoder')state.barangay=String(state.user.barangay_id);
-  shell();await load();
+   shell();await load();
  }catch(e){if(!state.user)await authPage();else {shell();message(e.message,'error');}}
 }
 async function busy(fn){try{await fn();}catch(e){message(e.message,'error');}}
@@ -205,7 +203,6 @@ app.addEventListener('click',e=>{const t=e.target.closest('[data-action]');if(t)
 app.addEventListener('change',e=>{
  if(e.target.id==='period'){state.month=e.target.value;busy(load);}
  if(e.target.id==='scope'){state.barangay=e.target.value;busy(load);}
- if(e.target.id==='role-select')$('#user-barangay-field')?.classList.toggle('hidden',e.target.value!=='encoder');
 });
 app.addEventListener('input',e=>{if(e.target.id==='search-brgy'){state.search=e.target.value;const d=state.data?.barangays||[];$('#content').innerHTML=dashboardView();const f=$('#search-brgy');if(f){f.focus();f.setSelectionRange(f.value.length,f.value.length);}}});
 app.addEventListener('submit',e=>{
@@ -214,7 +211,7 @@ app.addEventListener('submit',e=>{
   const msg=$('#auth-error');msg.innerHTML='';
   busy(async()=>{try{
    const r=await post(f.id==='setup-form'?'/bootstrap':'/login',values);state.user=r.user;
-   state.catalog=await api('/catalog');if(state.user.role==='encoder')state.barangay=String(state.user.barangay_id);
+   state.catalog=await api('/catalog');
    shell();await load();
   }catch(err){msg.innerHTML=`<div class="error">${esc(err.message)}</div>`;}});return;
  }
