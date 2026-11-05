@@ -16,7 +16,7 @@
 Prepared for City Veterinary Office, Ormoc City, Leyte  
 Developed by: Engr. Rico J. Pono
 
-This is a complete **Cloudflare Workers + D1** application. The source code belongs in **GitHub**; Cloudflare automatically deploys the site. **Do not deploy this as a standalone GitHub Pages static website**: its `/api/*` endpoints require the Cloudflare Worker and D1 database.
+This is a completed **Cloudflare Workers + D1** application. The source code belongs in **GitHub**; Cloudflare automatically deploys the site. **Do not deploy this as a standalone GitHub Pages static website**: its `/api/*` endpoints require the Cloudflare Worker and D1 database.
 
 ## Included features
 
