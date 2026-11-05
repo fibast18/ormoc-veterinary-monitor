@@ -6,6 +6,7 @@ const db=new DatabaseSync(':memory:');
 db.exec('PRAGMA foreign_keys=ON');
 db.exec(readFileSync(new URL('../migrations/0001_schema.sql',import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('../migrations/0002_barangays.sql',import.meta.url),'utf8'));
+db.exec(readFileSync(new URL('../migrations/0003_offline_sync.sql',import.meta.url),'utf8'));
 class Statement {
  constructor(sql){this.sql=sql;this.args=[];}
  bind(...args){this.args=args;return this;}

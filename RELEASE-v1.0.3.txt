@@ -1,0 +1,9 @@
+OCVMS v1.0.3 - Offline-Ready Edition - November 5, 2026
+Cumulative update from v1.0.2. Retains existing Cloudflare D1 ID and CVO citywide Encoder workflow.
+NEW: public/sw.js, public/offline.js (per-device IndexedDB records/outbox), installable manifest.
+NEW: offline census and vaccination create/edit/delete requests; offline CSV import; synced outbox on reconnect, online status and conflict messages.
+NEW: non-destructive migration 0003_offline_sync.sql, revision-based conflict protection and mutation-id retry checks.
+NEW: city admin approval of encoder deletion requests, soft deletion and existing audit history.
+Critical: RUN the remote D1 migration BEFORE uploading and committing the new version to connected GitHub.
+Do not delete or recreate existing D1, reset users, or put passwords/secret tokens into the repo.
+Unverified: real-browser offline/reconnection behavior on user devices; perform the field test in UPGRADE-v1.0.3-OFFLINE-FIRST.md.

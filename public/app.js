@@ -1,18 +1,65 @@
-/* OCVMS v1.0.2 — dependency-free client. Shared data lives only in Cloudflare D1. */
+/* OCVMS v1.0.3 — Cloudflare D1 is authoritative. Offline drafts stay on this device until synced. */
+import {kvDelete,saveSession,readSession,cacheRead,cacheWrite,listOutbox,enqueue,deleteOutbox,markOutbox,clearUserDeviceData,installServiceWorker,isConnectivityError} from './offline.js';
 const app=document.querySelector('#app');
 const nowPH=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`;};
-const state={user:null,catalog:null,page:'dashboard',month:nowPH().slice(0,7),barangay:'',data:null,census:[],vaccinations:[],users:[],audit:[],search:''};
+const state={user:null,catalog:null,page:'dashboard',month:nowPH().slice(0,7),barangay:'',data:null,census:[],vaccinations:[],users:[],audit:[],search:'',offline:false,offlineAt:0,queue:[],syncing:false};
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>Number(n||0).toLocaleString('en-PH');
 const $=sel=>document.querySelector(sel);
 function message(s,type='notice'){const box=$('#flash');if(!box)return;box.innerHTML=`<div class="${type}">${esc(s)}</div>`;box.scrollIntoView({behavior:'smooth',block:'nearest'});}
+const cacheable=path=>/^\/(catalog|dashboard\?|census\?|vaccinations\?)/.test(path);
 async function api(path,opts={}){
- const res=await fetch('/api'+path,{credentials:'same-origin',cache:'no-store',...opts,headers:{...(opts.body?{'content-type':'application/json'}:{}),...(opts.headers||{})}});
+ const useCache=(!opts.method||opts.method==='GET')&&cacheable(path)&&state.user;
+ const getOffline=async()=>{
+   let cached=await cacheRead(state.user.id,path);
+   const scope=path.match(/&barangay_id=(\d+)/);
+   if(!cached&&scope&&/^\/(census|vaccinations)\?/.test(path)){
+    cached=await cacheRead(state.user.id,path.replace(/&barangay_id=\d+/,''));
+    if(cached)return {...cached,data:{...cached.data,rows:cached.data.rows.filter(r=>String(r.barangay_id)===scope[1])}};
+   }
+   if(!cached&&scope&&path.startsWith('/dashboard?')){
+    cached=await cacheRead(state.user.id,path.replace(/&barangay_id=\d+/,''));
+    if(cached){const rows=cached.data.barangays.filter(r=>String(r.id)===scope[1]);
+      const sum=k=>rows.reduce((a,b)=>a+Number(b[k]||0),0);
+      return {...cached,data:{...cached.data,barangays:rows,species:[],totals:{animals:sum('animals'),dogs:sum('dogs'),cats:sum('cats'),livestock:sum('livestock'),poultry:sum('poultry'),vaccinated_dogs:sum('vaccinated_dogs'),vaccinated_cats:sum('vaccinated_cats'),reporting:rows.filter(r=>r.species_reported>0).length,expected:rows.length}}};
+    }
+   }
+   return cached;
+ };
+ if(navigator.onLine===false && useCache){
+  const auth=await readSession();if(!auth||auth.user.id!==state.user.id)throw Error('Offline session expired. Reconnect and sign in again.');
+  state.offline=true;const cached=await getOffline();
+  if(cached)return cached.data;
+  throw Error('No offline copy for this month. Open the month while online first.');
+ }
+ let res;
+ try{res=await fetch('/api'+path,{credentials:'same-origin',cache:'no-store',...opts,headers:{...(opts.body?{'content-type':'application/json'}:{}),...(opts.headers||{})}});}
+ catch(error){const e=Error('Cloudflare cannot be reached.');e.isNetworkError=true;
+  if(useCache){const cached=await getOffline();if(cached){state.offline=true;state.offlineAt=cached.time;return cached.data;}}
+  throw e;
+ }
  let data;try{data=await res.json();}catch{throw Error('Server response was not valid JSON. Check Cloudflare deployment and D1 setup.');}
- if(!res.ok){if(res.status===401 && !['/login','/bootstrap'].includes(path)){state.user=null;await authPage();}throw Error(data.error||'Server request failed.');}
+ if(!res.ok){const e=Error(data.error||'Server request failed.');e.status=res.status;
+  if(res.status===401 && !['/login','/bootstrap','/me'].includes(path)){state.user=null;await kvDelete('offline-session');await authPage();}
+  throw e;
+ }
+ state.offline=false;
+ if(useCache)await cacheWrite(state.user.id,path,data);
  return data;
 }
-const post=(path,data)=>api(path,{method:'POST',body:JSON.stringify(data)});
+const canQueue=path=>['/census','/vaccinations','/census/delete','/vaccinations/delete'].includes(path);
+async function post(path,data){
+ if(canQueue(path)){
+  data={...data,mutation_id:data.mutation_id||crypto.randomUUID()};
+  if(path==='/vaccinations'&&!data.id)data.client_id=data.client_id||crypto.randomUUID();
+  if(navigator.onLine===false){const sess=await readSession();if(!sess||sess.user.id!==state.user?.id)throw Error('Offline session expired. Reconnect and sign in again.');await enqueue(state.user?.id,path,data);state.offline=true;await updateOfflineStatus();return {queued:true};}
+  try{return await api(path,{method:'POST',body:JSON.stringify(data)});}
+  catch(e){if(!isConnectivityError(e))throw e;
+   await enqueue(state.user?.id,path,data);state.offline=true;await updateOfflineStatus();return {queued:true};}
+ }
+ if(navigator.onLine===false)throw Error('This action needs internet access and an active City Veterinary Office session.');
+ return api(path,{method:'POST',body:JSON.stringify(data)});
+}
 const params=x=>new URLSearchParams(x).toString();
 const roleText=r=>({admin:'City Admin',encoder:'Encoder',viewer:'City Viewer'}[r]||r);
 const allowedWrite=()=>state.user?.role!=='viewer';
@@ -50,12 +97,12 @@ function dashboardView(){
  ${table(['Barangay',{label:'Total animals',number:true},{label:'Livestock',number:true},{label:'Poultry',number:true},{label:'Dogs',number:true},{label:'Cats',number:true},{label:'Dog rabies doses',number:true},{label:'Cat rabies doses',number:true},'Census status'],brgyRows)}</div>
  <div class="warning">Vaccination totals are administered doses, not necessarily the number of unique pets vaccinated. They should not be presented as vaccination coverage percentages without individual-animal deduplication.</div>`;
 }
-function reviewButtons(entity,r){return isAdmin()?`<button class="btn tiny" data-action="review" data-entity="${entity}" data-id="${esc(r.id)}" data-status="approved">Approve</button><button class="btn tiny danger" data-action="review" data-entity="${entity}" data-id="${esc(r.id)}" data-status="rejected">Reject</button>`:'';}
+function reviewButtons(entity,r){return r.__pending?'<span class="flag">Local draft</span>':r.deletion_requested?isAdmin()?`<button class="btn tiny" data-action="review-delete" data-entity="${entity}" data-id="${esc(r.id)}" data-decision="approve">Approve delete</button><button class="btn tiny ghost" data-action="review-delete" data-entity="${entity}" data-id="${esc(r.id)}" data-decision="reject">Keep</button>`:'<span class="flag">Deletion awaiting CVO</span>':isAdmin()?`<button class="btn tiny" data-action="review" data-entity="${entity}" data-id="${esc(r.id)}" data-status="approved">Approve</button><button class="btn tiny danger" data-action="review" data-entity="${entity}" data-id="${esc(r.id)}" data-status="rejected">Reject</button>`:'';}
 function censusView(){
- const rows=state.census.map(r=>`<tr><td><strong>${esc(r.barangay)}</strong><span class="user-meta">${esc(r.psgc)}</span></td><td>${esc(r.species_name)}</td><td class="number">${fmt(r.head_count)}</td><td class="number">${fmt(r.households)}</td><td>${statusBadge(r.status)}</td><td title="${esc(r.notes)}">${esc((r.notes||'').slice(0,60))}</td><td>${esc(r.updated_at||'')}</td><td>${reviewButtons('census',r)}</td></tr>`);
+ const rows=state.census.map(r=>`<tr><td><strong>${esc(r.barangay)}</strong><span class="user-meta">${esc(r.psgc)}</span></td><td>${esc(r.species_name)}</td><td class="number">${fmt(r.head_count)}</td><td class="number">${fmt(r.households)}</td><td>${r.__deletePending?'<span class="flag">DELETE QUEUED</span>':r.__pending?'<span class="flag">UNSYNCED</span>':r.deletion_requested?'<span class="flag">DELETE REQUEST</span>':statusBadge(r.status)}</td><td title="${esc(r.notes)}">${esc((r.notes||'').slice(0,60))}</td><td>${esc(r.updated_at||'')}</td><td>${allowedWrite()?`<button class="btn tiny ghost" data-action="edit-census" data-id="${esc(r.id)}">Edit</button><button class="btn tiny danger" data-action="delete-record" data-entity="census" data-id="${esc(r.id)}">Delete</button>`:''}${reviewButtons('census',r)}</td></tr>`);
  return head('Animal & Livestock Census','CVO Encoders may record monthly livestock and animal counts from any barangay.')+filterToolbar('census')+
  `<div class="formsplit"><div class="panel"><h3>Save monthly inventory</h3><p class="help">One total per barangay, species, and month. Saving an existing entry replaces its count and returns it to pending review.</p>
- ${allowedWrite()?`<form id="census-form"><div class="entry-grid"><div class="field wide"><label>Barangay</label><select name="barangay_id" required>${brgyOptions(state.barangay)}</select></div>
+ ${allowedWrite()?`<form id="census-form"><input type="hidden" name="expected_revision" value=""><div class="entry-grid"><div class="field wide"><label>Barangay</label><select name="barangay_id" required>${brgyOptions(state.barangay)}</select></div>
  <div class="field wide"><label>Animal species</label><select name="species_code" required>${speciesOptions('swine')}</select></div>
  <div class="field"><label>Reporting month</label><input type="month" name="month" value="${esc(state.month)}" required></div>
  <div class="field"><label>Head count</label><input type="number" name="head_count" min="0" max="99999999" required placeholder="0"></div>
@@ -63,16 +110,16 @@ function censusView(){
  <div class="field wide"><label>Source or remarks</label><textarea name="notes" maxlength="600" placeholder="e.g., CVO collection date, source barangay report"></textarea></div></div>
  <button class="btn full" type="submit">Save inventory · Pending review</button></form>`:'<p class="help">Your account has read-only access.</p>'}</div>
  <div class="panel"><div class="panel-head"><h3>Inventory records</h3><span class="muted">${state.census.length} matching records</span></div>
- ${table(['Barangay','Species',{label:'Heads',number:true},{label:'Households',number:true},'Status','Remarks','Updated','Review'],rows)}
+ ${table(['Barangay','Species',{label:'Heads',number:true},{label:'Households',number:true},'Status','Remarks','Updated','Actions'],rows)}
  <h3 style="margin-top:22px">Bulk import from Excel-compatible CSV</h3><p class="help">Download the template, fill it using Excel or Numbers, then export/save as CSV UTF-8. Maximum 30 records per server batch (the app splits larger files automatically).</p>
  ${allowedWrite()?`<div class="import-strip"><button class="btn ghost" data-action="template" data-type="census">↓ CSV template</button><input type="file" class="input-file" accept=".csv,text/csv" id="import-census"><button class="btn" data-action="import" data-type="census">Import census CSV</button></div>`:''}
  <p class="help">PSGC codes use 10 digits and are provided in the included barangay reference file. Imported or changed records require administrator approval.</p></div></div>`;
 }
 function vaccinationView(){
- const rows=state.vaccinations.map(r=>`<tr><td>${esc(r.date)}</td><td><strong>${esc(r.barangay)}</strong></td><td>${r.species_code==='dog'?'Dog':'Cat'}</td><td>${esc(r.vaccine)}</td><td class="number">${fmt(r.doses)}</td><td>${esc(r.site||'—')}</td><td>${statusBadge(r.status)}</td><td>${allowedWrite()?`<button class="btn tiny ghost" data-action="edit-vaccination" data-id="${esc(r.id)}">Edit</button>`:''}${reviewButtons('vaccinations',r)}</td></tr>`);
+ const rows=state.vaccinations.map(r=>`<tr><td>${esc(r.date)}</td><td><strong>${esc(r.barangay)}</strong></td><td>${r.species_code==='dog'?'Dog':'Cat'}</td><td>${esc(r.vaccine)}</td><td class="number">${fmt(r.doses)}</td><td>${esc(r.site||'—')}</td><td>${r.__deletePending?'<span class="flag">DELETE QUEUED</span>':r.__pending?'<span class="flag">UNSYNCED</span>':r.deletion_requested?'<span class="flag">DELETE REQUEST</span>':statusBadge(r.status)}</td><td>${allowedWrite()?`<button class="btn tiny ghost" data-action="edit-vaccination" data-id="${esc(r.id)}">Edit</button><button class="btn tiny danger" data-action="delete-record" data-entity="vaccinations" data-id="${esc(r.id)}">Delete</button>`:''}${reviewButtons('vaccinations',r)}</td></tr>`);
  return head('Dog & Cat Vaccination Monitoring','CVO Encoders may record vaccination activities from any barangay.')+filterToolbar('vaccinations')+
  `<div class="formsplit"><div class="panel"><h3>Record vaccination activity</h3><p class="help">Use separate records for dogs and cats. Doses may include repeat vaccinations of the same animal.</p>
- ${allowedWrite()?`<form id="vaccination-form"><input type="hidden" name="id" value=""><div class="entry-grid"><div class="field wide"><label>Barangay</label><select name="barangay_id" required>${brgyOptions(state.barangay)}</select></div>
+ ${allowedWrite()?`<form id="vaccination-form"><input type="hidden" name="id" value=""><input type="hidden" name="expected_revision" value=""><div class="entry-grid"><div class="field wide"><label>Barangay</label><select name="barangay_id" required>${brgyOptions(state.barangay)}</select></div>
  <div class="field"><label>Date</label><input type="date" name="date" value="${nowPH()}" required></div><div class="field"><label>Species</label><select name="species_code">${speciesOptions('dog',true)}</select></div>
  <div class="field wide"><label>Vaccine</label><select name="vaccine"><option>Anti-rabies</option><option>Other</option></select></div>
  <div class="field"><label>Doses given</label><input type="number" min="1" max="9999999" name="doses" required></div>
@@ -116,31 +163,114 @@ async function authPage(){
  <div class="field"><label>Admin password (minimum 12 characters)</label><input type="password" name="password" minlength="12" maxlength="128" required></div><button class="btn full" type="submit">Create first administrator</button></form>`:
  `<form id="login-form"><div class="field"><label>Username</label><input name="username" autocomplete="username" required></div>
  <div class="field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div><button class="btn full" type="submit">Sign in</button></form>`}
- <div id="auth-error"></div><p class="help text-center" style="margin-top:25px">Cloudflare Workers + D1 · v1.0.2<br>Developed by: Engr. Rico J. Pono</p></div></div>`;
+ <div id="auth-error"></div><p class="help text-center" style="margin-top:25px">Cloudflare Workers + D1 · v1.0.3<br>Developed by: Engr. Rico J. Pono</p></div></div>`;
 }
 function shell(){
- app.innerHTML=`<header class="topbar"><div class="brand"><div class="brand-icon">✚</div><div><h1>ORMOC CITY VETERINARY</h1><small>Animal & Vaccination Monitoring System · v1.0.2</small></div></div>
+ app.innerHTML=`<header class="topbar"><div class="brand"><div class="brand-icon">✚</div><div><h1>ORMOC CITY VETERINARY</h1><small>Animal & Vaccination Monitoring System · v1.0.3</small></div></div>
  <div class="account"><div class="account-details"><strong>${esc(state.user.full_name)}</strong><small>${esc(roleText(state.user.role))}</small></div><button class="btn light" data-action="logout">Sign out</button></div></header>
- <div class="layout"><nav class="tabs" id="tabs"></nav><div id="flash"></div><main id="content"></main><footer class="footer">City Veterinary Monitoring · Ormoc City, Leyte · 85 barangays<br>Developed by: Engr. Rico J. Pono · Version 1.0.2</footer></div>`;
+ <div class="layout"><nav class="tabs" id="tabs"></nav><div id="offline-status" aria-live="polite"></div><div id="flash"></div><main id="content"></main><footer class="footer">City Veterinary Monitoring · Ormoc City, Leyte · 85 barangays<br>Developed by: Engr. Rico J. Pono · Version 1.0.3</footer></div>`;
 }
 function tabs(){const defs=[['dashboard','▦ Dashboard'],['census','♧ Animal Census'],['vaccinations','✚ Vaccinations'],['barangays','◫ Barangays'],...(isAdmin()?[['users','♙ Users'],['audit','☷ Audit Trail']]:[])];$('#tabs').innerHTML=defs.map(([p,t])=>`<button data-action="nav" data-page="${p}" class="${state.page===p?'active':''}">${t}</button>`).join('');}
 function draw(){tabs();const v={dashboard:dashboardView,census:censusView,vaccinations:vaccinationView,barangays:barangayView,users:userView,audit:auditView}[state.page]||dashboardView;$('#content').innerHTML=v();}
+function matchingRow(row,kind){
+ if(kind==='census')return row.month===state.month&&(!state.barangay||String(row.barangay_id)===String(state.barangay));
+ return row.date?.slice(0,7)===state.month&&(!state.barangay||String(row.barangay_id)===String(state.barangay));
+}
+async function applyOfflineDrafts(){
+ if(!state.user)return;
+ state.queue=await listOutbox(state.user.id);
+ const brgs=new Map((state.catalog?.barangays||[]).map(x=>[String(x.id),x]));
+ const species=new Map((state.catalog?.species||[]).map(x=>[x.code,x]));
+ for(const op of state.queue){
+  if(op.status!=='pending')continue;
+  const x=op.payload,type=op.path;
+  if(type==='/census'&&matchingRow(x,'census')&&state.page==='census'){
+   const i=state.census.findIndex(r=>String(r.barangay_id)===String(x.barangay_id)&&r.species_code===x.species_code&&r.month===x.month);
+   const old=i<0?{}:state.census[i];
+   const row={...old,...x,id:old.id||`local-${op.id}`,head_count:Number(x.head_count),households:Number(x.households||0),barangay_id:Number(x.barangay_id),barangay:brgs.get(String(x.barangay_id))?.name||'',psgc:brgs.get(String(x.barangay_id))?.psgc||'',species_name:species.get(x.species_code)?.name||x.species_code,status:'pending',revision:x.expected_revision||0,__pending:true};
+   if(i>=0)state.census[i]=row;else state.census.unshift(row);
+  }
+  if(type==='/vaccinations'&&matchingRow(x,'vaccinations')&&state.page==='vaccinations'){
+   const id=x.id||x.client_id,i=state.vaccinations.findIndex(r=>r.id===id),old=i<0?{}:state.vaccinations[i];
+   const row={...old,...x,id,date:x.date,doses:Number(x.doses),barangay_id:Number(x.barangay_id),barangay:brgs.get(String(x.barangay_id))?.name||'',status:'pending',revision:x.expected_revision||0,__pending:true};
+   if(i>=0)state.vaccinations[i]=row;else state.vaccinations.unshift(row);
+  }
+  if(type.endsWith('/delete')){
+   const collection=type.startsWith('/census')?state.census:state.vaccinations;
+   const row=collection.find(r=>r.id===x.id);if(row)row.__deletePending=true;
+  }
+ }
+}
+async function updateOfflineStatus(){
+ const el=$('#offline-status');if(!el||!state.user)return;
+ state.queue=await listOutbox(state.user.id);
+ const pending=state.queue.filter(x=>x.status==='pending'),errors=state.queue.filter(x=>x.status==='failed'||x.status==='conflict');
+ const offline=state.offline||navigator.onLine===false;
+ el.innerHTML=`<div class="offline-banner ${offline?'is-offline':''}"><span><strong>${offline?'◉ Offline mode · saved on this device':'● Cloud connection available'}</strong> · ${pending.length} pending sync${pending.length===1?'':'s'}${errors.length?` · ${errors.length} need attention`:''}</span>
+ <span class="offline-actions"><button class="btn tiny ghost" data-action="sync-now" ${offline||state.syncing?'disabled':''}>${state.syncing?'Syncing…':'↻ Sync now'}</button><button class="btn tiny ghost" data-action="queue-details">Outbox</button></span></div>`;
+}
 async function load(){
  if(!state.user||!state.catalog)return;
  const q=params({month:state.month,...(state.barangay?{barangay_id:state.barangay}:{})});
  if(['dashboard','barangays'].includes(state.page))state.data=await api('/dashboard?'+q);
  if(state.page==='census')state.census=(await api('/census?'+q)).rows;
  if(state.page==='vaccinations')state.vaccinations=(await api('/vaccinations?'+q)).rows;
- if(state.page==='users')state.users=(await api('/users')).rows;
- if(state.page==='audit')state.audit=(await api('/audit')).rows;
- draw();
+ if(state.page==='users'){if(state.offline)throw Error('User administration needs an internet connection.');state.users=(await api('/users')).rows;}
+ if(state.page==='audit'){if(state.offline)throw Error('Audit Trail requires an internet connection.');state.audit=(await api('/audit')).rows;}
+ await applyOfflineDrafts();draw();await updateOfflineStatus();
+}
+async function loadOfflineSession(){
+ const saved=await readSession();if(!saved)return false;
+ state.user=saved.user;state.offline=true;
+ const cat=await cacheRead(state.user.id,'/catalog');if(!cat){state.user=null;return false;}
+ state.catalog=cat.data;shell();await load();
+ message('Offline session: edits remain on this device until they synchronize. Approved dashboard figures are from the last online download.');return true;
+}
+async function warmCache(){
+ if(state.offline||!state.user)return;
+ const month=state.month;
+ for(const path of [`/census?month=${month}`,`/vaccinations?month=${month}`]){
+  try{await api(path);}catch(e){console.warn('Offline prefetch failed',path,e);}
+ }
 }
 async function init(){
+ await installServiceWorker();
  try{
-  const x=await api('/me');state.user=x.user;
-  state.catalog=await api('/catalog');
-   shell();await load();
- }catch(e){if(!state.user)await authPage();else {shell();message(e.message,'error');}}
+  const x=await api('/me');state.user=x.user;await saveSession(x.user);
+  state.catalog=await api('/catalog');shell();await load();warmCache();
+ }catch(e){
+  if(isConnectivityError(e)||navigator.onLine===false){
+   try{if(await loadOfflineSession())return;}catch(err){console.warn('Offline cache unavailable',err);}
+   app.innerHTML='<div class="auth-wrap"><div class="auth-card"><h1>Internet required for first sign-in</h1><p>Sign in online once, open your reporting data, then this device can work offline for up to 12 hours before verification is required.</p><button class="btn" id="retry-auth">Retry connection</button></div></div>';
+   $('#retry-auth')?.addEventListener('click',init);return;
+  }
+  if(!state.user)await authPage();else {shell();message(e.message,'error');}
+ }
+}
+async function syncQueue(){
+ if(!state.user||state.syncing||navigator.onLine===false)return;
+ state.syncing=true;await updateOfflineStatus();let completed=0;
+ try{
+  // The server must authenticate CURRENTLY; cached roles never authorize a cloud write.
+  const verified=await api('/me');if(verified.user.id!==state.user.id)throw Error('Account changed. Sign in as the original encoder to sync these drafts.');
+  for(const op of await listOutbox(state.user.id)){
+   if(op.status!=='pending')continue;
+   try{await api(op.path,{method:'POST',body:JSON.stringify(op.payload)});await deleteOutbox(op.id);completed++;}
+   catch(e){
+    if(isConnectivityError(e)){state.offline=true;break;}
+    if(e.status===401||e.status===403){await markOutbox(op,e.message,'failed');break;}
+    await markOutbox(op,e.message,e.status===409?'conflict':'failed');
+    // Keep the outbox item for manual review; never auto-overwrite server changes.
+   }
+  }
+  if(completed){await load();message(`${completed} local change(s) synchronized. CVO approval may still be required.`);}
+ }catch(e){message('Sync stopped: '+e.message,'error');}
+ finally{state.syncing=false;await updateOfflineStatus();}
+}
+function showOutbox(){
+ const pending=state.queue.map(x=>`<tr><td>${esc(new Date(x.createdAt).toLocaleString('en-PH'))}</td><td>${esc(x.path)}</td><td>${esc(x.payload.month||x.payload.date||x.payload.id||'')}</td><td>${esc(x.status)}</td><td>${esc(x.error||'')}</td><td><button class="btn tiny danger" data-action="discard-op" data-id="${esc(x.id)}">Discard</button></td></tr>`);
+ state.page='outbox';tabs();$('#content').innerHTML=head('Device outbox','Entries here are stored ONLY on this device, not yet confirmed in Cloudflare. Do not clear browser storage or uninstall before syncing.')+
+ `<div class="panel"><p class="help">Conflicts are retained, not overwritten. Discard only after you have checked the server record and copied any corrections you still need.</p><button class="btn" data-action="sync-now">↻ Sync pending changes</button>${table(['Created','Operation','Reference','State','Details','Action'],pending,'No unsynced changes on this device.')}</div>`;
 }
 async function busy(fn){try{await fn();}catch(e){message(e.message,'error');}}
 function downloadCsv(name,content){const blob=new Blob(['\ufeff'+content],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
@@ -162,27 +292,74 @@ function parseCsv(text){
 function downloadExport(type){const q=params({type,month:state.month,...(state.barangay?{barangay_id:state.barangay}:{})});window.location.href='/api/export?'+q;}
 async function doImport(type){
  const f=$(`#import-${type}`)?.files?.[0];if(!f)throw Error('Choose a .csv file first.');if(f.size>1500000)throw Error('CSV file is too large (1.5 MB maximum).');
- const rows=parseCsv(await f.text());const columns=Object.keys(rows[0]);const wanted=templates[type].trim().split(',');
+ const rows=parseCsv(await f.text());if(rows.length>1000)throw Error('Import is limited to 1,000 rows per file. Split larger CSV files.');const columns=Object.keys(rows[0]);const wanted=templates[type].trim().split(',');
  if(wanted.some(x=>!columns.includes(x)))throw Error('CSV is missing one or more template columns: '+wanted.filter(x=>!columns.includes(x)).join(', '));
  if(!window.confirm(`Import ${rows.length} ${type==='census'?'census':'vaccination'} record(s)? ${type==='census'?'Existing monthly records will be overwritten and returned to pending review.':'Reimporting a file adds duplicate doses.'}`))return;
+ if(state.offline||navigator.onLine===false){
+  const byPsgc=new Map((state.catalog?.barangays||[]).map(b=>[b.psgc,b]));
+  const converted=rows.map((r,i)=>{
+   const b=byPsgc.get(String(r.barangay_psgc||'').padStart(10,'0'));
+   if(!b)throw Error(`CSV row ${i+2}: unknown barangay PSGC.`);
+   if(type==='census'){
+    const old=state.census.find(x=>x.month===r.month&&String(x.barangay_id)===String(b.id)&&x.species_code===r.species_code);
+    return {path:'/census',values:{barangay_id:b.id,month:r.month,species_code:r.species_code,head_count:r.head_count,households:r.households||0,notes:r.notes,expected_revision:old?.revision||0,mutation_id:crypto.randomUUID()}};
+   }
+   return {path:'/vaccinations',values:{barangay_id:b.id,date:r.date,species_code:r.species_code,vaccine:r.vaccine,doses:r.doses,site:r.site,notes:r.notes,client_id:crypto.randomUUID(),expected_revision:0,mutation_id:crypto.randomUUID()}};
+  });
+  // Validate ALL rows before enqueueing any, so malformed CSVs cannot partially enter the outbox.
+  for(const {path,values} of converted){
+   const isCensus=path==='/census';
+   if((isCensus&&!/^20\d\d-(0[1-9]|1[0-2])$/.test(values.month))||(!isCensus&&!/^20\d\d-\d\d-\d\d$/.test(values.date)))throw Error('Invalid reporting month or vaccination date.');
+   if(!state.catalog.species.some(x=>x.code===values.species_code)||(isCensus?(!Number.isSafeInteger(Number(values.head_count))||Number(values.head_count)<0):(!['dog','cat'].includes(values.species_code)||!['Anti-rabies','Other'].includes(values.vaccine)||!Number.isSafeInteger(Number(values.doses))||Number(values.doses)<1)))throw Error('CSV contains invalid species or quantity.');
+  }
+  for(const {path,values} of converted)await enqueue(state.user.id,path,values);
+  await load();message(`Saved ${converted.length} CSV row(s) in this device outbox. No cloud data changed yet. Sync when online.`);return;
+ }
  let done=0;for(let i=0;i<rows.length;i+=30){const result=await post('/import/'+type,{rows:rows.slice(i,i+30)});done+=result.imported;}
  await load();message(`Imported ${done} rows successfully. Entries are pending City Veterinary review.`);
 }
 function fillVaccination(id){
  const r=state.vaccinations.find(x=>x.id===id),form=$('#vaccination-form');if(!r||!form)return;
  for(const [key,value] of Object.entries(r)){const f=form.elements.namedItem(key);if(f)f.value=value??'';}
- $('#cancel-edit')?.classList.remove('hidden');form.scrollIntoView({behavior:'smooth',block:'start'});message('Editing existing entry. Save to resubmit it for review.');
+ form.elements.namedItem('expected_revision').value=r.revision||0;$('#cancel-edit')?.classList.remove('hidden');form.scrollIntoView({behavior:'smooth',block:'start'});message('Editing existing entry. Save to resubmit it for review.');
 }
-function clearVaccineForm(){const f=$('#vaccination-form');if(!f)return;f.reset();f.elements.namedItem('id').value='';$('#cancel-edit')?.classList.add('hidden');}
+function clearVaccineForm(){const f=$('#vaccination-form');if(!f)return;f.reset();f.elements.namedItem('id').value='';f.elements.namedItem('expected_revision').value='';$('#cancel-edit')?.classList.add('hidden');}
 async function action(target){
  const what=target.dataset.action;
  if(what==='nav'){state.page=target.dataset.page;await load();return;}
- if(what==='logout'){await post('/logout',{});state.user=null;state.catalog=null;await authPage();return;}
- if(what==='refresh'){await load();message('Latest cloud data loaded.');return;}
- if(what==='export'){downloadExport(target.dataset.type);return;}
+ if(what==='queue-details'){await updateOfflineStatus();showOutbox();return;}
+ if(what==='sync-now'){await syncQueue();if(state.page==='outbox'){await updateOfflineStatus();showOutbox();}return;}
+ if(what==='discard-op'){if(!confirm('Discard this unsynced change permanently from this device?'))return;await deleteOutbox(target.dataset.id);await updateOfflineStatus();if(state.page==='outbox')showOutbox();else await load();return;}
+ if(what==='logout'){if((await listOutbox(state.user.id)).length&&!confirm('Signing out will DELETE unsynced drafts on this device. Continue?'))return;
+  if(navigator.onLine!==false){try{await post('/logout',{});}catch(e){if(!isConnectivityError(e))throw e;}}
+  await clearUserDeviceData(state.user.id);state.user=null;state.catalog=null;if(navigator.onLine===false){app.innerHTML='<div class="auth-wrap"><div class="auth-card"><h1>Signed out locally</h1><p>Reconnect to the internet to sign in again.</p></div></div>';}else await authPage();return;}
+ if(what==='refresh'){if(navigator.onLine!==false)await syncQueue();await load();message(state.offline?'Showing available offline data.':'Latest available cloud data loaded.');return;}
+ if(what==='export'){if(state.offline||navigator.onLine===false)throw Error('Cloud CSV export requires an online connection. Your cached records remain viewable offline.');downloadExport(target.dataset.type);return;}
  if(what==='template'){downloadCsv('ormoc-vet-'+target.dataset.type+'-template.csv',templates[target.dataset.type]);return;}
  if(what==='import'){await doImport(target.dataset.type);return;}
+ if(what==='delete-record'){
+  const kind=target.dataset.entity,rows=kind==='census'?state.census:state.vaccinations,r=rows.find(x=>x.id===target.dataset.id);
+  if(!r)return;
+  if(r.deletion_requested||r.__deletePending)throw Error('Deletion is already requested or queued for this record.');
+  if(!confirm(`Request deletion of this ${kind==='census'?'census':'vaccination'} record? Encoder requests require City Admin approval.`))return;
+  if(r.id.startsWith('local-')){
+   const op=state.queue.find(x=>`local-${x.id}`===r.id);if(op){await deleteOutbox(op.id);await load();message('Unsynced draft discarded.');}return;
+  }
+  const result=await post(`/${kind}/delete`,{id:r.id,expected_revision:r.revision||1,key:`census:${r.barangay_id}:${r.species_code}:${r.month}`});
+  await load();message(result.queued?'Deletion request saved offline. It has NOT yet changed the cloud database.':result.message);return;
+ }
+ if(what==='review-delete'){
+  if(state.offline||navigator.onLine===false)throw Error('CVO approval needs an internet connection.');
+  if(!confirm(`${target.dataset.decision==='approve'?'Approve deletion':'Reject deletion and keep record'}?`))return;
+  await post(`/${target.dataset.entity}/deletion-review`,{id:target.dataset.id,decision:target.dataset.decision});await load();message('Deletion decision recorded.');return;
+ }
+ if(what==='edit-census'){
+  const r=state.census.find(x=>x.id===target.dataset.id),f=$('#census-form');if(!r||!f)return;
+  for(const key of ['barangay_id','species_code','month','head_count','households','notes']){const el=f.elements.namedItem(key);if(el)el.value=r[key]??'';}
+  f.elements.namedItem('expected_revision').value=r.revision||0;f.scrollIntoView({behavior:'smooth',block:'start'});message('Editing census entry. Save to resubmit for review.');return;
+ }
  if(what==='review'){
+  if(state.offline||navigator.onLine===false)throw Error('Review approval needs an internet connection.');
   if(!window.confirm(`${target.dataset.status.toUpperCase()} this record?`))return;
   const end=target.dataset.entity==='census'?'/census/review':'/vaccinations/review';
   await post(end,{id:target.dataset.id,status:target.dataset.status});await load();message('Review decision saved. Dashboard totals reflect approved records.');return;
@@ -211,14 +388,18 @@ app.addEventListener('submit',e=>{
   const msg=$('#auth-error');msg.innerHTML='';
   busy(async()=>{try{
    const r=await post(f.id==='setup-form'?'/bootstrap':'/login',values);state.user=r.user;
-   state.catalog=await api('/catalog');
-   shell();await load();
+   state.catalog=await api('/catalog');await saveSession(r.user);
+   shell();await load();warmCache();
   }catch(err){msg.innerHTML=`<div class="error">${esc(err.message)}</div>`;}});return;
  }
  busy(async()=>{
-  if(f.id==='census-form'){await post('/census',values);await load();message('Monthly census saved and sent for review.');}
-  else if(f.id==='vaccination-form'){await post('/vaccinations',values);await load();message('Vaccination entry saved and sent for review.');}
+  if(f.id==='census-form'){const old=state.census.find(r=>String(r.barangay_id)===String(values.barangay_id)&&r.species_code===values.species_code&&r.month===values.month);
+   values.expected_revision=values.expected_revision!==''?Number(values.expected_revision):old?Number(old.revision||0):0;const result=await post('/census',values);await load();message(result.queued?'Census saved on this device; pending cloud sync and CVO review.':'Monthly census saved and sent for review.');}
+  else if(f.id==='vaccination-form'){values.expected_revision=values.expected_revision!==''?Number(values.expected_revision):0;const result=await post('/vaccinations',values);await load();message(result.queued?'Vaccination saved on this device; awaiting sync.':'Vaccination entry saved and sent for review.');}
   else if(f.id==='user-form'){await post('/users',{...values,action:'create'});await load();message('New user created. Share the username and password securely.');}
  });
 });
+window.addEventListener('online',()=>{state.offline=false;updateOfflineStatus();syncQueue();});
+window.addEventListener('offline',()=>{state.offline=true;updateOfflineStatus();});
+window.addEventListener('pageshow',()=>{if(state.user&&navigator.onLine!==false)syncQueue();});
 init();

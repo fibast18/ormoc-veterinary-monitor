@@ -1,4 +1,4 @@
-# Deploy OCVMS v1.0.2: GitHub + Cloudflare D1
+# Deploy OCVMS v1.0.3: GitHub + Cloudflare D1
 
 This is a GitHub-connected **Cloudflare Worker**, not a GitHub Pages app. GitHub hosts the source files, Cloudflare hosts the secure API + the user interface, and Cloudflare D1 stores the data for all devices.
 
@@ -16,7 +16,7 @@ This is a GitHub-connected **Cloudflare Worker**, not a GitHub Pages app. GitHub
 2. Find **D1 SQL Databases** in the Cloudflare dashboard (the menu label may vary).
 3. Create a database **exactly** named `ormoc-vet-monitor`.
 4. Copy its **Database ID (UUID)**.
-5. In `wrangler.toml`, **confirm** the `database_id` matches the D1 Database ID shown in your Cloudflare dashboard. This v1.0.2 package includes the Database ID observed in your successful November 5 deployment. If you deploy into another Cloudflare account or database, replace it with that database’s actual UUID. Keep `binding = "DB"` and `database_name = "ormoc-vet-monitor"` unchanged.
+5. In `wrangler.toml`, **confirm** the `database_id` matches the D1 Database ID shown in your Cloudflare dashboard. This v1.0.3 package includes the Database ID observed in your successful November 5 deployment. If you deploy into another Cloudflare account or database, replace it with that database’s actual UUID. Keep `binding = "DB"` and `database_name = "ormoc-vet-monitor"` unchanged.
 6. Save the GitHub commit to `main`.
 
 ## Part C: Initialize the database tables
@@ -29,7 +29,8 @@ Use **either** method:
 2. Open the **Console** / SQL editor.
 3. Open `migrations/0001_schema.sql` from the repository, copy the entire file, and execute it in the D1 console.
 4. Open `migrations/0002_barangays.sql`, copy the entire file and execute it. It inserts 85 barangays. Do not enter any invented animal counts.
-5. Verify: run `SELECT COUNT(*) FROM barangays;` and confirm **85**.
+5. Execute `migrations/0003_offline_sync.sql` for offline sync support. (For existing databases, do not re-run 0001/0002.)
+6. Verify: run `SELECT COUNT(*) FROM barangays;` and confirm **85**.
 
 **Method 2 — Mac terminal:**
 
@@ -41,7 +42,7 @@ npx wrangler login
 npx wrangler d1 migrations apply ormoc-vet-monitor --remote
 ```
 
-The `--remote` part is essential: without it, only the local simulation database is updated. The migration tool applies both SQL files in sequence.
+The `--remote` part is essential: without it, only the local simulation database is updated. The migration tool applies only unapplied SQL files in sequence. On an existing v1.0.2 database it should apply just `0003_offline_sync.sql`.
 
 ## Part D: Connect GitHub to Cloudflare Workers
 
@@ -125,7 +126,8 @@ Retain regular database backups securely outside GitHub and Google-indexable web
 
 - This initial version records aggregate per-species counts and aggregate doses, **not** pet owner data or uniquely identified animals. Do not add personal names, residential addresses, phone numbers, or medical details in notes. Obtain the City Government's IT/DPO signoff prior to official production use.
 - Passwords are hashed; only the app administrator can create/reset user credentials. There is no self-service password reset or multifactor authentication in v1.0.2.
-- The system requires an internet connection to read/write D1. The UI is mobile-friendly but there is no offline editing.
+- The system now supports device-side offline caching and queued record edits (after first online login). The cloud cannot be written to without internet; queued records are not official until synced and approved. Admin review, account management, audit and cloud CSV export remain online-only. Offline login expires after 12 hours since last online authentication.
+- Local device data is not encrypted at rest by this app; device OS storage protections still apply. Use private, locked LGU-approved devices. Do not enter personal names, addresses or owner data in notes. Browsers can evict local storage; do not rely on an offline outbox as the only permanent copy.
 - Cloudflare Workers Free and D1 Free have daily/storage limits; verify before broad rollout.
 - For regular government data processing, establish access reviews, retention policies, approvals, incident response, backups, and a policy specifying who can certify official numbers.
 

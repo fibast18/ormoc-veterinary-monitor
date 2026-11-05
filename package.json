@@ -1,6 +1,6 @@
 {
- "name":"ormoc-city-veterinary-monitor","version":"1.0.2","private":true,"type":"module",
+ "name":"ormoc-city-veterinary-monitor","version":"1.0.3","private":true,"type":"module",
  "description":"Citywide veterinary animal census and vaccination monitoring, Cloudflare Workers + D1",
- "scripts":{"dev":"wrangler dev","deploy":"wrangler deploy","migrate:local":"wrangler d1 migrations apply ormoc-vet-monitor --local","migrate:remote":"wrangler d1 migrations apply ormoc-vet-monitor --remote","check":"node --check src/worker.js && node --check public/app.js && node tests/test_pbkdf2_limit.mjs && node tests/test_citywide_ui.mjs"},
+ "scripts":{"dev":"wrangler dev","deploy":"wrangler deploy","migrate:local":"wrangler d1 migrations apply ormoc-vet-monitor --local","migrate:remote":"wrangler d1 migrations apply ormoc-vet-monitor --remote","check":"node --check src/worker.js && node --check public/app.js && node --check public/offline.js && node --check public/sw.js && node tests/test_pbkdf2_limit.mjs && node tests/test_citywide_ui.mjs"},
  "devDependencies":{"wrangler":"^4.0.0"}
 }

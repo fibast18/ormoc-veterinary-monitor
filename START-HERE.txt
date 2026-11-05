@@ -1,14 +1,12 @@
-ORMOC CITY VETERINARY MONITORING SYSTEM — v1.0.2
+OCVMS v1.0.3 OFFLINE-READY - EXISTING OR MOC CITY VETERINARY SITE
 
-UPDATE YOUR EXISTING v1.0.1 INSTALLATION
-1. Keep your existing D1 database and all its records. DO NOT re-run SQL migrations.
-2. Extract this ZIP and upload/commit the complete project files to your existing GitHub `main` branch.
-3. Confirm wrangler.toml has your existing D1 Database ID and no secrets are committed.
-4. Check that Cloudflare Workers deploys the commit; if not run `npx wrangler deploy` in the updated folder.
-5. Refresh your website and confirm footer v1.0.2.
-6. Sign in as City Admin -> Users -> Create user -> Encoder. No barangay selection is needed.
-7. Encoders now select ANY barangay when entering census/vaccination data or importing CSV, pending admin approval.
+1. READ UPGRADE-v1.0.3-OFFLINE-FIRST.md BEFORE uploading to GitHub.
+2. Apply migrations/0003_offline_sync.sql with:
+   npx wrangler d1 migrations apply ormoc-vet-monitor --remote
+   (run from this v1.0.3 project directory.)
+3. THEN upload complete updated source to GitHub main, enabling automatic Cloudflare deployment.
+4. Confirm v1.0.3 on your existing Worker site.
+5. Every device must load/sign in once ONLINE before using offline mode.
+6. Check Outbox and synchronize pending records before deleting browser data, uninstalling or changing devices.
 
-WARNING: All previously created Encoders automatically gain access to all 85 barangays. Review active accounts.
-
-Read RELEASE-v1.0.2.txt and DEPLOYMENT-GUIDE.md for details.
+sw.js is in public/sw.js. Do not upload only sw.js; full application update and D1 migration required.

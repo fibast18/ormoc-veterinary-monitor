@@ -1,4 +1,16 @@
-# Ormoc City Veterinary Monitoring System (OCVMS) v1.0.2
+> **IMPORTANT: UPDATE FROM v1.0.2 — READ THIS FIRST**
+>
+> Keep your existing D1 database and user accounts. Before pushing the v1.0.3 files to your GitHub `main` branch (which triggers automatic deployment), apply **only** the new migration to your existing remote D1 database:
+>
+> ```bash
+> npx wrangler d1 migrations apply ormoc-vet-monitor --remote
+> ```
+>
+> Run this command from the **extracted v1.0.3 project folder**. You should see `0003_offline_sync.sql` marked successful (0001 and 0002 should already be tracked as applied). No database reset is needed. Keep the existing `wrangler.toml` ID, which is included here.
+>
+> Once the migration succeeds, upload and commit the v1.0.3 source files to GitHub. Your connected Cloudflare Worker should deploy automatically.
+
+# Ormoc City Veterinary Monitoring System (OCVMS) v1.0.3
 
 **Animal/Livestock Census + Dog/Cat Vaccination Monitoring**  
 Prepared for City Veterinary Office, Ormoc City, Leyte  
@@ -34,7 +46,7 @@ Read **DEPLOYMENT-GUIDE.md** before deployment. In brief:
 1. Create a GitHub repository and upload **all** these project files to its `main` branch.
 2. In Cloudflare D1, create a database named `ormoc-vet-monitor`.
 3. Replace `REPLACE_WITH_YOUR_D1_DATABASE_UUID` in `wrangler.toml` with your actual D1 database ID, and commit the change.
-4. Apply `migrations/0001_schema.sql` and `migrations/0002_barangays.sql` **in that order**, using D1 Console or the Wrangler migration command.
+4. For a **fresh installation**, apply `0001_schema.sql`, `0002_barangays.sql`, and `0003_offline_sync.sql` in ascending order. For an **existing v1.0.2 database**, apply only the new `0003_offline_sync.sql` migration using the Wrangler migration command.
 5. Cloudflare Workers & Pages → Create application → GitHub → your repo. Worker name must be **`ormoc-veterinary-monitor`** (same as `wrangler.toml`); `main` branch; build command **blank**; deploy command **`npx wrangler deploy`**.
 6. In the deployed Worker's **Settings → Variables and Secrets**, add a **Secret** named `BOOTSTRAP_TOKEN`. Use an unpredictable random string of at least 32 characters, **not** a simple shared password. Never commit it to GitHub.
 7. Open your Worker site. On the setup page, enter the token once and create the first city administrator. **Remove the bootstrap secret after setup** if you no longer need it.
@@ -73,20 +85,20 @@ node --experimental-sqlite tests/integration.mjs
 - `wrangler.toml` — Cloudflare Worker + D1 binding and static assets.
 - `src/worker.js` — server APIs, authentication, authorization, reporting and database access.
 - `public/index.html`, `public/app.js`, `public/styles.css`, `public/favicon.svg` — web app UI.
-- `migrations/0001_schema.sql` — base tables; `migrations/0002_barangays.sql` — 85 PSGC barangays.
+- `migrations/0001_schema.sql` — base tables; `0002_barangays.sql` — 85 PSGC barangays; `0003_offline_sync.sql` — non-destructive offline sync revisions and delete requests.
 - `barangays-reference.csv` — reference for importing records (not animal counts).
 - `scripts/generate_seed.py` — seed generator; `tests/test_schema.py` — SQLite integrity checks.
 - `DEPLOYMENT-GUIDE.md` — complete beginner-friendly steps.
 
 ## Scope, operational requirements, limitations
 
-- **Internet is required** to access and save shared Cloudflare D1 records. This release is not offline-first and has no offline queue.
-- **This release has not been independently security audited.** Before collecting personally identifiable animal owner information, extend the security/privacy design and seek LGU privacy/DPO review. In v1.0.2, enter aggregate counts only; do **not** put names, addresses, phone numbers, or other personal data in free-text notes.
+- **Offline use in v1.0.3:** After one successful online login and opening the current month, the service worker caches the app and IndexedDB stores per-user read copies. Encoders can stage census/vaccination saves, edits, deletion requests, and CSV imports offline in the device outbox. A verified online session is required to sync these. Admin approvals, user account changes, auditing and cloud CSV exports remain online-only. Browser storage is not a guaranteed backup. The offline login allowance is 12 hours since last verified login.
+- **This release has not been independently security audited.** Before collecting personally identifiable animal owner information, extend the security/privacy design and seek LGU privacy/DPO review. In v1.0.3, enter aggregate counts only; do **not** put names, addresses, phone numbers, or other personal data in free-text notes.
 - Vaccination entry errors can be edited (which makes the record pending), or a City Admin can **reject** previously approved data to exclude it from official totals. There is no bulk deletion button.
 - The `Other` vaccine category is broad. Use notes for a non-rabies vaccine product; specific vaccine catalogs can be added later.
 - CSV vaccination imports are additive; importing the exact same file twice will **double-count doses** if both copies are approved. Review before approval.
 - Per-month list views and CSV exports cap at 3,000 and 10,000 records respectively. For larger data volumes, add pagination.
-- Current passwords are shared by the City Admin directly; there is no self-service password recovery or MFA in v1.0.2.
+- Current passwords are shared by the City Admin directly; there is no self-service password recovery or MFA in v1.0.3.
 - A public source repository is acceptable if no secrets or database exports are committed, but access to the live data is **not public**. Only authenticated app users can access records.
 - The city should validate species classifications, survey frequency, and data approval policy before treating the dashboard as an official reporting system.
 

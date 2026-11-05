@@ -1,5 +1,5 @@
-/* Ormoc City Veterinary Monitoring System v1.0.2 — Cloudflare Workers + D1 */
-const VERSION = '1.0.2';
+/* Ormoc City Veterinary Monitoring System v1.0.3 — Cloudflare Workers + D1 */
+const VERSION = '1.0.3';
 const SESSION_HOURS = 12;
 // Cloudflare Workers production rejects PBKDF2 deriveBits over 100,000 iterations.
 // Do not raise without migrating to a supported password KDF and versioned hashes.
@@ -73,6 +73,41 @@ function vaccineInput(x,u) {
   const vaccine=clean(x.vaccine,30);if(!['Anti-rabies','Other'].includes(vaccine))throw BAD_REQUEST('Vaccine must be Anti-rabies or Other.');
   return {barangay_id,date:date(x.date),species_code,vaccine,doses:int(x.doses,'Doses',9999999,1),site:clean(x.site,120),notes:clean(x.notes,600)};
 }
+function mutationFields(x) {
+  const rev=x.expected_revision===undefined||x.expected_revision===null||x.expected_revision===''?null:int(x.expected_revision,'Expected record revision',999999999,0);
+  const id=x.mutation_id==null?'':clean(x.mutation_id,60);
+  if(id && !/^[a-f0-9-]{36}$/i.test(id))throw BAD_REQUEST('Invalid mutation ID.');
+  return {rev,id};
+}
+function checkRev(existing,expected) {
+  const actual=existing?.revision??0;
+  if(expected!==null && actual!==expected)throw BAD_REQUEST('Sync conflict: this record changed on Cloudflare. Review the latest data and enter the correction again.',409);
+}
+async function deleteRequest(db,u,table,x) {
+  writable(u);const id=clean(x.id,60),meta=mutationFields(x);
+  const existing=await db.prepare(`SELECT id,revision,deleted_at,deletion_requested,last_mutation_id FROM ${table} WHERE id=?`).bind(id).first();
+  if(meta.id && existing?.last_mutation_id===meta.id)return response({ok:true,already_applied:true});
+  if(!existing||existing.deleted_at)throw BAD_REQUEST('Record not found or already deleted.',404);
+  checkRev(existing,meta.rev);
+  // Encoder delete requests remain visible to admins until reviewed; approved totals do NOT change yet.
+  const approved=u.role==='admin';
+  const r=await db.prepare(`UPDATE ${table} SET deletion_requested=?,deleted_at=?,revision=revision+1,
+    updated_at=CURRENT_TIMESTAMP,updated_by=?,last_mutation_id=? WHERE id=? AND revision=? AND deleted_at IS NULL`)
+    .bind(approved?0:1,approved?isoSql():null,u.id,meta.id||null,id,existing.revision).run();
+  if(!r.meta.changes)throw BAD_REQUEST('Sync conflict: record changed while deleting.',409);
+  await log(db,u,approved?'delete':'request_delete',table,id,approved?'Soft deleted by City Admin':'Awaiting City Admin deletion approval');
+  return response({ok:true,message:approved?'Record deleted.':'Deletion request submitted for City Admin approval.',deletion_pending:!approved});
+}
+async function deletionReview(db,u,table,x) {
+  admin(u);const id=clean(x.id,60),decision=clean(x.decision,20);
+  if(!['approve','reject'].includes(decision))throw BAD_REQUEST('Invalid deletion decision.');
+  const existing=await db.prepare(`SELECT id FROM ${table} WHERE id=? AND deleted_at IS NULL AND deletion_requested=1`).bind(id).first();
+  if(!existing)throw BAD_REQUEST('Pending deletion request not found.',404);
+  await db.prepare(`UPDATE ${table} SET deletion_requested=0,deleted_at=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND deletion_requested=1`)
+    .bind(decision==='approve'?isoSql():null,id).run();
+  await log(db,u,decision+'_delete',table,id);
+  return response({ok:true});
+}
 async function createSession(db,u,req) {
   const token=base64(crypto.getRandomValues(new Uint8Array(36))).replaceAll('+','-').replaceAll('/','_').replaceAll('=','');
   await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await sha(token),u.id,plusHours(SESSION_HOURS)).run();
@@ -139,14 +174,14 @@ async function api(req,env) {
     const m=month(url.searchParams.get('month')),bid=scopeId(u,url.searchParams.get('barangay_id'));
     const condition=bid?' AND barangay_id=?':'';const params=bid?[m,bid]:[m];
     const [bySpecies, byBrgy, vaccines, brgys]=await Promise.all([
-      db.prepare(`SELECT species_code,SUM(head_count) AS total,COUNT(DISTINCT barangay_id) AS reporting FROM census WHERE month=? AND status='approved'${condition} GROUP BY species_code`).bind(...params).all(),
+      db.prepare(`SELECT species_code,SUM(head_count) AS total,COUNT(DISTINCT barangay_id) AS reporting FROM census WHERE month=? AND status='approved' AND deleted_at IS NULL${condition} GROUP BY species_code`).bind(...params).all(),
       db.prepare(`SELECT barangay_id,SUM(head_count) AS animals,SUM(CASE WHEN species_code='dog' THEN head_count ELSE 0 END) AS dogs,
         SUM(CASE WHEN species_code='cat' THEN head_count ELSE 0 END) AS cats,
         SUM(CASE WHEN species_code IN ('carabao','cattle','swine','goat','sheep','horse') THEN head_count ELSE 0 END) AS livestock,
         SUM(CASE WHEN species_code IN ('chicken','duck','turkey','quail') THEN head_count ELSE 0 END) AS poultry,
-        COUNT(*) AS species_reported FROM census WHERE month=? AND status='approved'${condition} GROUP BY barangay_id`).bind(...params).all(),
+        COUNT(*) AS species_reported FROM census WHERE month=? AND status='approved' AND deleted_at IS NULL${condition} GROUP BY barangay_id`).bind(...params).all(),
       db.prepare(`SELECT barangay_id,species_code,SUM(doses) AS doses FROM vaccinations
-        WHERE substr(date,1,7)=? AND vaccine='Anti-rabies' AND status='approved'${condition} GROUP BY barangay_id,species_code`).bind(...params).all(),
+        WHERE substr(date,1,7)=? AND vaccine='Anti-rabies' AND status='approved' AND deleted_at IS NULL${condition} GROUP BY barangay_id,species_code`).bind(...params).all(),
       db.prepare(`SELECT id,name,classification FROM barangays ${bid?'WHERE id=?':''} ORDER BY name COLLATE NOCASE`).bind(...(bid?[bid]:[])).all()
     ]);
     const rows=brgys.results.map(b=>{
@@ -165,25 +200,37 @@ async function api(req,env) {
     if(status&&!['pending','approved','rejected'].includes(status))throw BAD_REQUEST('Invalid status.');
     const sql=`SELECT c.*,b.name AS barangay,b.psgc,s.name AS species_name,u.full_name AS updated_by_name
       FROM census c JOIN barangays b ON b.id=c.barangay_id JOIN species s ON s.code=c.species_code
-      LEFT JOIN users u ON u.id=c.updated_by WHERE c.month=? ${bid?'AND c.barangay_id=?':''} ${status?'AND c.status=?':''}
+      LEFT JOIN users u ON u.id=c.updated_by WHERE c.deleted_at IS NULL AND c.month=? ${bid?'AND c.barangay_id=?':''} ${status?'AND c.status=?':''}
       ORDER BY b.name,s.sort_order LIMIT 3000`;
     return response({ok:true,rows:(await db.prepare(sql).bind(m,...(bid?[bid]:[]),...(status?[status]:[])).all()).results});
   }
   if(path==='/api/census'&&method==='POST'){
-    writable(u);const x=censusInput(await body(req),u);await knownBarangay(db,x.barangay_id);
+    writable(u);const payload=await body(req),x=censusInput(payload,u),meta=mutationFields(payload);await knownBarangay(db,x.barangay_id);
+    const old=await db.prepare('SELECT revision,deleted_at,last_mutation_id FROM census WHERE barangay_id=? AND species_code=? AND month=?')
+      .bind(x.barangay_id,x.species_code,x.month).first();
+    if(meta.id && old?.last_mutation_id===meta.id)return response({ok:true,already_applied:true});
+    checkRev(old,meta.rev);
     const id=crypto.randomUUID();
-    await db.prepare(`INSERT INTO census(id,barangay_id,species_code,month,head_count,households,notes,created_by,updated_by)
-      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(barangay_id,species_code,month) DO UPDATE SET
-      head_count=excluded.head_count,households=excluded.households,notes=excluded.notes,status='pending',
-      updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP,approved_by=NULL,approved_at=NULL`).bind(id,x.barangay_id,x.species_code,x.month,x.head_count,x.households,x.notes,u.id,u.id).run();
+    if(old){
+      const r=await db.prepare(`UPDATE census SET head_count=?,households=?,notes=?,status='pending',deleted_at=NULL,
+        deletion_requested=0,revision=revision+1,last_mutation_id=?,updated_by=?,updated_at=CURRENT_TIMESTAMP,
+        approved_by=NULL,approved_at=NULL WHERE barangay_id=? AND species_code=? AND month=? AND revision=?`)
+        .bind(x.head_count,x.households,x.notes,meta.id||null,u.id,x.barangay_id,x.species_code,x.month,old.revision).run();
+      if(!r.meta.changes)throw BAD_REQUEST('Sync conflict: census was changed by another user.',409);
+    }else{
+      await db.prepare(`INSERT INTO census(id,barangay_id,species_code,month,head_count,households,notes,created_by,updated_by,last_mutation_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(id,x.barangay_id,x.species_code,x.month,x.head_count,x.households,x.notes,u.id,u.id,meta.id||null).run();
+    }
     await log(db,u,'save','census',`${x.barangay_id}:${x.species_code}:${x.month}`,`Head count ${x.head_count}; review pending`);
     return response({ok:true,message:'Census saved for City Veterinary review.'});
   }
+  if(path==='/api/census/delete'&&method==='POST')return deleteRequest(db,u,'census',await body(req));
+  if(path==='/api/census/deletion-review'&&method==='POST')return deletionReview(db,u,'census',await body(req));
   if(path==='/api/census/review'&&method==='POST'){
     admin(u);const x=await body(req),status=clean(x.status,20),id=clean(x.id,60);
     if(!['approved','rejected'].includes(status))throw BAD_REQUEST('Status must be approved or rejected.');
-    const existing=await db.prepare('SELECT id FROM census WHERE id=?').bind(id).first();if(!existing)throw BAD_REQUEST('Census record not found.',404);
-    await db.prepare(`UPDATE census SET status=?,approved_by=?,approved_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(status,status==='approved'?u.id:null,status==='approved'?isoSql():null,id).run();
+    const existing=await db.prepare('SELECT id FROM census WHERE id=? AND deleted_at IS NULL').bind(id).first();if(!existing)throw BAD_REQUEST('Census record not found.',404);
+    await db.prepare(`UPDATE census SET status=?,approved_by=?,approved_at=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND deleted_at IS NULL AND deletion_requested=0`).bind(status,status==='approved'?u.id:null,status==='approved'?isoSql():null,id).run();
     await log(db,u,status,'census',id);
     return response({ok:true});
   }
@@ -192,30 +239,38 @@ async function api(req,env) {
     const status=url.searchParams.get('status')||'';if(status&&!['pending','approved','rejected'].includes(status))throw BAD_REQUEST('Invalid status.');
     const sql=`SELECT v.*,b.name AS barangay,b.psgc,u.full_name AS updated_by_name FROM vaccinations v
       JOIN barangays b ON b.id=v.barangay_id LEFT JOIN users u ON u.id=v.updated_by
-      WHERE substr(v.date,1,7)=? ${bid?'AND v.barangay_id=?':''} ${status?'AND v.status=?':''}
+      WHERE v.deleted_at IS NULL AND substr(v.date,1,7)=? ${bid?'AND v.barangay_id=?':''} ${status?'AND v.status=?':''}
       ORDER BY v.date DESC,b.name LIMIT 3000`;
     return response({ok:true,rows:(await db.prepare(sql).bind(m,...(bid?[bid]:[]),...(status?[status]:[])).all()).results});
   }
   if(path==='/api/vaccinations'&&method==='POST'){
-    writable(u);const payload=await body(req),x=vaccineInput(payload,u);await knownBarangay(db,x.barangay_id);
-    const id=payload.id?clean(payload.id,60):crypto.randomUUID();
+    writable(u);const payload=await body(req),x=vaccineInput(payload,u),meta=mutationFields(payload);await knownBarangay(db,x.barangay_id);
+    const id=payload.id?clean(payload.id,60):payload.client_id?clean(payload.client_id,60):crypto.randomUUID();
+    if(!/^[a-f0-9-]{36}$/i.test(id))throw BAD_REQUEST('Invalid vaccination record ID.');
+    const existing=await db.prepare('SELECT id,revision,deleted_at,last_mutation_id FROM vaccinations WHERE id=?').bind(id).first();
+    if(meta.id && existing?.last_mutation_id===meta.id)return response({ok:true,already_applied:true});
+    checkRev(existing,meta.rev);
     if(payload.id){
-      const existing=await db.prepare('SELECT barangay_id FROM vaccinations WHERE id=?').bind(id).first();
-      if(!existing)throw BAD_REQUEST('Vaccination record not found.',404);
-      await db.prepare(`UPDATE vaccinations SET barangay_id=?,date=?,species_code=?,vaccine=?,doses=?,site=?,notes=?,
-        status='pending',updated_by=?,updated_at=CURRENT_TIMESTAMP,approved_by=NULL,approved_at=NULL WHERE id=?`).bind(x.barangay_id,x.date,x.species_code,x.vaccine,x.doses,x.site,x.notes,u.id,id).run();
-    } else {
-      await db.prepare(`INSERT INTO vaccinations(id,barangay_id,date,species_code,vaccine,doses,site,notes,created_by,updated_by)
-        VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(id,x.barangay_id,x.date,x.species_code,x.vaccine,x.doses,x.site,x.notes,u.id,u.id).run();
-    }
+      if(!existing||existing.deleted_at)throw BAD_REQUEST('Vaccination record not found.',404);
+      const r=await db.prepare(`UPDATE vaccinations SET barangay_id=?,date=?,species_code=?,vaccine=?,doses=?,site=?,notes=?,
+        status='pending',updated_by=?,updated_at=CURRENT_TIMESTAMP,approved_by=NULL,approved_at=NULL,
+        deletion_requested=0,revision=revision+1,last_mutation_id=? WHERE id=? AND revision=? AND deleted_at IS NULL`)
+        .bind(x.barangay_id,x.date,x.species_code,x.vaccine,x.doses,x.site,x.notes,u.id,meta.id||null,id,existing.revision).run();
+      if(!r.meta.changes)throw BAD_REQUEST('Sync conflict: vaccination was changed by another user.',409);
+    }else if(!existing){
+      await db.prepare(`INSERT INTO vaccinations(id,barangay_id,date,species_code,vaccine,doses,site,notes,created_by,updated_by,last_mutation_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(id,x.barangay_id,x.date,x.species_code,x.vaccine,x.doses,x.site,x.notes,u.id,u.id,meta.id||null).run();
+    }else throw BAD_REQUEST('Vaccination ID already exists. Refresh records before saving.',409);
     await log(db,u,payload.id?'update':'create','vaccination',id,`${x.date} ${x.species_code} ${x.doses} doses; pending`);
-    return response({ok:true,message:'Vaccination record saved for review.'});
+    return response({ok:true,message:'Vaccination record saved for review.',id});
   }
+  if(path==='/api/vaccinations/delete'&&method==='POST')return deleteRequest(db,u,'vaccinations',await body(req));
+  if(path==='/api/vaccinations/deletion-review'&&method==='POST')return deletionReview(db,u,'vaccinations',await body(req));
   if(path==='/api/vaccinations/review'&&method==='POST'){
     admin(u);const x=await body(req),status=clean(x.status,20),id=clean(x.id,60);
     if(!['approved','rejected'].includes(status))throw BAD_REQUEST('Status must be approved or rejected.');
-    const existing=await db.prepare('SELECT id FROM vaccinations WHERE id=?').bind(id).first();if(!existing)throw BAD_REQUEST('Vaccination record not found.',404);
-    await db.prepare(`UPDATE vaccinations SET status=?,approved_by=?,approved_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(status,status==='approved'?u.id:null,status==='approved'?isoSql():null,id).run();
+    const existing=await db.prepare('SELECT id FROM vaccinations WHERE id=? AND deleted_at IS NULL').bind(id).first();if(!existing)throw BAD_REQUEST('Vaccination record not found.',404);
+    await db.prepare(`UPDATE vaccinations SET status=?,approved_by=?,approved_at=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND deleted_at IS NULL AND deletion_requested=0`).bind(status,status==='approved'?u.id:null,status==='approved'?isoSql():null,id).run();
     await log(db,u,status,'vaccination',id);
     return response({ok:true});
   }
@@ -300,11 +355,11 @@ async function api(req,env) {
       headers=['month','barangay_psgc','barangay','species_code','species','head_count','households','status','notes','updated_at'];
       rows=(await db.prepare(`SELECT c.month,b.psgc AS barangay_psgc,b.name AS barangay,c.species_code,s.name AS species,
         c.head_count,c.households,c.status,c.notes,c.updated_at FROM census c JOIN barangays b ON b.id=c.barangay_id
-        JOIN species s ON s.code=c.species_code WHERE c.month=? ${bid?'AND c.barangay_id=?':''} ORDER BY b.name,s.sort_order LIMIT 10000`).bind(m,...(bid?[bid]:[])).all()).results;
+        JOIN species s ON s.code=c.species_code WHERE c.deleted_at IS NULL AND c.month=? ${bid?'AND c.barangay_id=?':''} ORDER BY b.name,s.sort_order LIMIT 10000`).bind(m,...(bid?[bid]:[])).all()).results;
     }else if(type==='vaccinations'){
       headers=['date','barangay_psgc','barangay','species_code','vaccine','doses','site','status','notes','updated_at'];
       rows=(await db.prepare(`SELECT v.date,b.psgc AS barangay_psgc,b.name AS barangay,v.species_code,v.vaccine,v.doses,v.site,v.status,v.notes,v.updated_at
-        FROM vaccinations v JOIN barangays b ON b.id=v.barangay_id WHERE substr(v.date,1,7)=? ${bid?'AND v.barangay_id=?':''}
+        FROM vaccinations v JOIN barangays b ON b.id=v.barangay_id WHERE v.deleted_at IS NULL AND substr(v.date,1,7)=? ${bid?'AND v.barangay_id=?':''}
         ORDER BY v.date,b.name LIMIT 10000`).bind(m,...(bid?[bid]:[])).all()).results;
     }else if(type==='summary'){
       headers=['month','barangay_psgc','barangay','classification','total_animals','livestock','poultry','dogs','cats','dog_anti_rabies_doses','cat_anti_rabies_doses','species_reported'];
@@ -314,12 +369,12 @@ async function api(req,env) {
           SUM(CASE WHEN species_code IN ('chicken','duck','turkey','quail') THEN head_count ELSE 0 END) AS poultry,
           SUM(CASE WHEN species_code='dog' THEN head_count ELSE 0 END) AS dogs,
           SUM(CASE WHEN species_code='cat' THEN head_count ELSE 0 END) AS cats,
-          COUNT(*) AS species_reported FROM census WHERE month=? AND status='approved' GROUP BY barangay_id
+          COUNT(*) AS species_reported FROM census WHERE month=? AND status='approved' AND deleted_at IS NULL GROUP BY barangay_id
         ), vs AS (
           SELECT barangay_id,
           SUM(CASE WHEN species_code='dog' THEN doses ELSE 0 END) AS dog_anti_rabies_doses,
           SUM(CASE WHEN species_code='cat' THEN doses ELSE 0 END) AS cat_anti_rabies_doses
-          FROM vaccinations WHERE substr(date,1,7)=? AND vaccine='Anti-rabies' AND status='approved'
+          FROM vaccinations WHERE substr(date,1,7)=? AND vaccine='Anti-rabies' AND status='approved' AND deleted_at IS NULL
           GROUP BY barangay_id
         ) SELECT ? AS month,b.psgc AS barangay_psgc,b.name AS barangay,b.classification,
           COALESCE(cs.total_animals,0) AS total_animals,COALESCE(cs.livestock,0) AS livestock,
@@ -346,7 +401,7 @@ export default {
       h.set('permissions-policy','camera=(), microphone=(), geolocation=()');
       if(!url.pathname.startsWith('/api/')){
         h.set('content-security-policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; object-src 'none'; form-action 'self'; frame-ancestors 'none'");
-        if(url.pathname==='/'||url.pathname.endsWith('.html'))h.set('cache-control','no-store');
+        if(url.pathname==='/'||url.pathname.endsWith('.html')||url.pathname==='/sw.js'||url.pathname==='/version.json')h.set('cache-control','no-store');
       }
       return new Response(r.body,{status:r.status,statusText:r.statusText,headers:h});
     } catch(e) {
