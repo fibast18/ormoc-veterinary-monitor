@@ -1,0 +1,23 @@
+ORMOC CITY VETERINARY MONITORING SYSTEM — VERSION 1.0.0
+
+This ZIP is GitHub + Cloudflare Workers + D1 source code, not yet a live site.
+
+START:
+1. Read DEPLOYMENT-GUIDE.md.
+2. Upload all project files/folders to a GitHub repository (main branch).
+3. Create Cloudflare D1 database: ormoc-vet-monitor.
+4. Replace the D1 UUID placeholder in wrangler.toml.
+5. Apply BOTH SQL migrations (in numerical order) to REMOTE D1.
+6. Connect the GitHub repository to Cloudflare Workers.
+   Worker name: ormoc-veterinary-monitor
+   Branch: main
+   Build command: BLANK
+   Deploy command: npx wrangler deploy
+7. Add BOOTSTRAP_TOKEN secret, then create the first app administrator.
+8. Create City Admin / Barangay Encoder / City Viewer accounts.
+
+The Worker URL is shared with users. Users do NOT need GitHub or Cloudflare accounts.
+
+NO ANIMAL COUNTS ARE PRE-LOADED. The 85 barangays are preconfigured.
+
+Developed by: Engr. Rico J. Pono

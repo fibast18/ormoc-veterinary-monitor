@@ -1,0 +1,99 @@
+from pathlib import Path
+import csv,io
+rows='''0803738001|Alegria|Urban
+0803738002|Bagong|Rural
+0803738003|Labrador|Rural
+0803738004|Bantigue|Urban
+0803738005|Batuan|Rural
+0803738006|Biliboy|Rural
+0803738007|Borok|Rural
+0803738009|Cabaon-an|Rural
+0803738010|Cabulihan|Rural
+0803738011|Cagbuhangin|Rural
+0803738012|Can-adieng|Urban
+0803738013|Can-untog|Rural
+0803738015|Catmon|Rural
+0803738016|Cogon Combado|Urban
+0803738017|Concepcion|Rural
+0803738018|Curva|Rural
+0803738019|Danao|Rural
+0803738020|Dayhagan|Urban
+0803738049|Dolores|Urban
+0803738050|Domonar|Rural
+0803738051|Don Felipe Larrazabal|Rural
+0803738052|Donghol|Rural
+0803738053|Esperanza|Rural
+0803738054|Hibunawon|Rural
+0803738055|Hugpa|Rural
+0803738056|Ipil|Urban
+0803738057|Lao|Rural
+0803738058|Libertad|Urban
+0803738059|Liloan|Urban
+0803738060|Linao|Urban
+0803738061|Mabini|Rural
+0803738062|Macabug|Urban
+0803738063|Magaswi|Rural
+0803738064|Mahayag|Rural
+0803738065|Mahayahay|Rural
+0803738066|Manlilinao|Rural
+0803738067|Margen|Urban
+0803738068|Mas-in|Rural
+0803738069|Matica-a|Rural
+0803738070|Milagro|Urban
+0803738071|Monterico|Rural
+0803738072|Nasunogan|Rural
+0803738073|Naungan|Rural
+0803738074|Nueva Vista|Rural
+0803738075|Patag|Rural
+0803738076|Punta|Urban
+0803738077|Quezon, Jr.|Rural
+0803738078|Rufina M. Tan|Rural
+0803738079|Sabang Bao|Rural
+0803738080|Salvacion|Urban
+0803738081|San Antonio|Rural
+0803738082|San Isidro|Urban
+0803738083|San Jose|Rural
+0803738084|San Juan|Rural
+0803738086|San Vicente|Rural
+0803738087|Santo Niño|Rural
+0803738088|San Pablo|Urban
+0803738089|Sumangga|Rural
+0803738090|Valencia|Urban
+0803738091|Barangay North|Urban
+0803738092|Airport|Rural
+0803738093|Cabintan|Rural
+0803738094|Camp Downes|Rural
+0803738095|Gaas|Rural
+0803738096|Green Valley|Rural
+0803738097|Licuma|Rural
+0803738098|Liberty|Rural
+0803738099|Leondoni|Rural
+0803738100|Nueva Sociedad|Rural
+0803738101|Tambulilid|Urban
+0803738102|Tongonan|Urban
+0803738104|Don Potenciano Larrazabal|Rural
+0803738105|Kadaohan|Rural
+0803738106|Guintigui-an|Rural
+0803738107|Danhug|Rural
+0803738108|Alta Vista|Rural
+0803738109|Bagong Buhay|Urban
+0803738110|Bayog|Rural
+0803738111|Doña Feliza Z. Mejia|Urban
+0803738112|Juaton|Rural
+0803738113|Luna|Urban
+0803738114|Mabato|Rural
+0803738115|Barangay East|Urban
+0803738116|Barangay South|Urban
+0803738117|Barangay West|Urban'''
+data=[x.split('|') for x in rows.splitlines()]
+assert len(data)==85,len(data)
+assert len({r[0] for r in data})==85
+base=Path(__file__).resolve().parents[1]
+with (base/'barangays-reference.csv').open('w',encoding='utf-8-sig',newline='') as f:
+ w=csv.writer(f);w.writerow(['psgc_10_digit','barangay','classification']);w.writerows(sorted(data,key=lambda r:r[1].lower()))
+escape=lambda s:s.replace("'","''")
+with (base/'migrations/0002_barangays.sql').open('w',encoding='utf-8') as f:
+ f.write('-- PSGC city roster, PSA https://psa.gov.ph/classification/psgc/barangays/0803738000\n-- Roster checked November 2026; classification Urban/Rural. No animal data is fabricated.\n')
+ f.write('INSERT OR IGNORE INTO barangays (psgc,name,classification) VALUES\n')
+ f.write(',\n'.join("('%s','%s','%s')"%tuple(map(escape,r)) for r in data)+';\n')
+print('Verified 85 distinct barangays; CSV and D1 seed generated')
